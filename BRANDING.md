@@ -8,3 +8,7 @@ Those brand assets are reserved by Bryce Blake. They are included to document
 the official app. If you redistribute a fork, use your own product name and
 replacement artwork. The code license does not grant rights to imply that a
 fork is the official BeTheHabit app or is endorsed by its developer.
+
+The ESV Scripture quotation in the About message is copyright Crossway and is
+excluded from the MIT license. Its use is governed by Crossway's permissions
+guidelines: https://www.crossway.org/permissions/.

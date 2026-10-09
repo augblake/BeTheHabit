@@ -173,7 +173,7 @@ struct ContentView: View {
             .alert("Thanks for using the app, Bryce Blake!", isPresented: $showingAboutPopup) {
                 Button("Close", role: .cancel) { }
             } message: {
-                Text("“Let us not grow weary of doing good, for in due season we will reap, if we do not give up.”\n— Galatians 6:9 (ESV)\n\nBryce Blake")
+                Text("“Let us not grow weary of doing good, for in due season we will reap, if we do not give up.”\n— Galatians 6:9 (ESV)\n\nBryce Blake\n\nScripture quotations are from the ESV® Bible (The Holy Bible, English Standard Version®), © 2001 by Crossway, a publishing ministry of Good News Publishers. ESV Text Edition: 2025. The ESV text may not be quoted in any publication made available to the public by a Creative Commons license. The ESV may not be translated in whole or in part into any other language. Used by permission. All rights reserved.")
             }
         }
         .padding(.horizontal, 20)
