@@ -1,6 +1,6 @@
 # BeTheHabit
 
-A free, open-source habit tracker for iPhone and iPad, built with SwiftUI.
+A free, open-source habit tracker for iPhone, built with SwiftUI.
 Track routines you want to build or reduce using check-ins, numbers, or timers.
 
 ## Features
