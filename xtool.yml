@@ -1,0 +1,11 @@
+version: 1
+bundleID: com.example.HabitQuest
+product: HabitQuest
+infoPath: AppInfo.plist
+iconPath: AppIcon.png
+entitlementsPath: BeHabit.CloudKit.entitlements
+extensions:
+  - product: BeHabitWidget
+    bundleID: com.example.HabitQuest.widget
+    infoPath: WidgetInfo.plist
+    entitlementsPath: BeHabitWidget.entitlements
