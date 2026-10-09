@@ -154,6 +154,11 @@ struct ContentView: View {
 
                 Divider()
 
+                Link("Privacy Policy", destination: URL(string: "https://augblake.github.io/BeTheHabit-support/privacy.html")!)
+                Link("Support", destination: URL(string: "https://augblake.github.io/BeTheHabit-support/support.html")!)
+
+                Divider()
+
                 Button("About", systemImage: "quote.opening") {
                     showingAboutPopup = true
                 }
@@ -164,7 +169,7 @@ struct ContentView: View {
                     .frame(width: 42, height: 46)
                     .contentShape(Rectangle())
             }
-            .accessibilityLabel("About")
+            .accessibilityLabel("App options")
             .alert("Thanks for using the app, Bryce Blake!", isPresented: $showingAboutPopup) {
                 Button("Close", role: .cancel) { }
             } message: {
