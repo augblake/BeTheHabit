@@ -1,15 +1,16 @@
 import HabitShared
+import Charts
 import SwiftUI
 import UIKit
 
 struct HabitDetailsView: View {
     @EnvironmentObject private var store: HabitStore
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var sharing = CloudHabitSharing.shared
 
     private let originalHabit: Habit
     @State private var notes: String
     @State private var iconName: String
-    @State private var iconColorHex: String
     @State private var goalText: String
     @State private var displayedMonth: Date
     @State private var selectedDate: Date
@@ -21,7 +22,6 @@ struct HabitDetailsView: View {
         originalHabit = habit
         _notes = State(initialValue: habit.notes ?? "")
         _iconName = State(initialValue: habit.iconName ?? HabitIconCatalog.defaultSymbol(for: habit))
-        _iconColorHex = State(initialValue: habit.iconColorHex ?? HabitPresetCatalog.preset(for: habit.name)?.colorHex ?? HabitIconPalette.defaultHex)
         _goalText = State(initialValue: habit.goal.map(Self.formatGoal) ?? "")
         _displayedMonth = State(initialValue: Date())
         _selectedDate = State(initialValue: Calendar.current.startOfDay(for: Date()))
@@ -48,6 +48,7 @@ struct HabitDetailsView: View {
                     if hasNumericTarget {
                         targetCard
                     }
+                    trendCard
                     historyCard
 
                     Button {
@@ -63,11 +64,13 @@ struct HabitDetailsView: View {
                     }
                     .buttonStyle(.bordered)
 
-                    Button { showingShare = true } label: {
-                        Label("Share with Friend", systemImage: "person.badge.plus")
-                            .frame(maxWidth: .infinity)
+                    if sharing.enabled {
+                        Button { showingShare = true } label: {
+                            Label("Share with Friend", systemImage: "person.badge.plus")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
 
                     Button(role: .destructive) {
                         confirmingDelete = true
@@ -87,6 +90,17 @@ struct HabitDetailsView: View {
             .background(Color.background.ignoresSafeArea())
             .navigationTitle("Habit Details")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink("Edit") {
+                        EditHabitView(habit: habit) {
+                            guard let updated = store.habits.first(where: { $0.id == originalHabit.id }) else { return }
+                            iconName = updated.iconName ?? HabitIconCatalog.defaultSymbol(for: updated)
+                            goalText = updated.goal.map(Self.formatGoal) ?? ""
+                        }
+                    }
+                }
+            }
             .alert("BeTheHabit Widget", isPresented: Binding(
                 get: { widgetMessage != nil },
                 set: { if !$0 { widgetMessage = nil } }
@@ -107,16 +121,10 @@ struct HabitDetailsView: View {
                 Text("This will permanently remove the habit and its history.")
             }
         }
-        .onChange(of: notes) { _, newValue in
+        .onChange(of: notes) { newValue in
             saveDetails(notes: newValue)
         }
-        .onChange(of: iconName) { _, newValue in
-            saveDetails(iconName: newValue)
-        }
-        .onChange(of: iconColorHex) { _, newValue in
-            saveDetails(iconColorHex: newValue)
-        }
-        .onChange(of: goalText) { _, _ in
+        .onChange(of: goalText) { _ in
             saveDetails(goal: Double(goalText))
         }
         .presentationDetents([.large])
@@ -126,9 +134,9 @@ struct HabitDetailsView: View {
         HStack(spacing: 14) {
             Image(systemName: iconName)
                 .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(Color(hex: iconColorHex))
+                .foregroundStyle(.primary)
                 .frame(width: 60, height: 60)
-                .background(Color.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 17))
+                .background(Color.habitSurface, in: RoundedRectangle(cornerRadius: 17))
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(habit.name)
@@ -138,23 +146,33 @@ struct HabitDetailsView: View {
                 Text("\(habit.type.title) · \(habit.trackingMode.title)")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
+
+                if visibleStreak > 0 {
+                    Label("\(visibleStreak) day streak", systemImage: "sparkle")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.habitGold)
+                }
             }
 
             Spacer()
 
-            NavigationLink {
-                HabitIconPickerView(selectedIcon: $iconName, selectedColorHex: $iconColorHex)
-            } label: {
-                Image(systemName: "square.grid.2x2")
-                    .font(.system(size: 19, weight: .medium))
-                    .foregroundStyle(Color.accent)
-                    .frame(width: 42, height: 42)
-                    .background(Color.primary.opacity(0.07), in: Circle())
-            }
-            .accessibilityLabel("Change habit icon")
         }
         .padding(16)
-        .background(cardBackground)
+        .background(
+            visibleStreak > 0 ? Color.habitGold.opacity(0.07) : Color.habitSurface,
+            in: RoundedRectangle(cornerRadius: 17)
+        )
+        .overlay {
+            if visibleStreak > 0 {
+                RoundedRectangle(cornerRadius: 17)
+                    .strokeBorder(Color.habitGold, lineWidth: visibleStreak >= 4 ? 2 : 1)
+                    .shadow(color: Color.habitGold.opacity(visibleStreak >= 4 ? 0.3 : 0), radius: 8)
+            }
+        }
+    }
+
+    private var visibleStreak: Int {
+        habit.visibleStreak()
     }
 
     private var notesCard: some View {
@@ -224,6 +242,103 @@ struct HabitDetailsView: View {
         return "A day is successful when the value reaches this minimum."
     }
 
+    private var trendCard: some View {
+        let trend = HabitTrend(habit: habit)
+        let color: Color = trend.direction == .falling ? .primary : .habitGreen
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Consistency trend", systemImage: "chart.xyaxis.line")
+                    .font(.system(size: 16, weight: .semibold))
+                Spacer()
+                Label(trendTitle(trend.direction), systemImage: trendSymbol(trend.direction))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(color)
+            }
+
+            Text("Rolling 7-day completion rate · Last 28 days")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+
+            if trend.points.isEmpty {
+                Text("Record your first day to start the graph.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 100)
+            } else {
+                Chart {
+                    ForEach(trend.points) { point in
+                        AreaMark(
+                            x: .value("Day", point.date),
+                            y: .value("Completion rate", point.percent)
+                        )
+                        .foregroundStyle(color.opacity(0.15))
+
+                        LineMark(
+                            x: .value("Day", point.date),
+                            y: .value("Completion rate", point.percent)
+                        )
+                        .foregroundStyle(color)
+                        .interpolationMethod(.catmullRom)
+                        .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round))
+                    }
+                    if let latest = trend.points.last {
+                        PointMark(
+                            x: .value("Day", latest.date),
+                            y: .value("Completion rate", latest.percent)
+                        )
+                        .foregroundStyle(color)
+                        .symbolSize(65)
+                    }
+                }
+                .chartYScale(domain: 0...100)
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: [0, 50, 100]) {
+                        AxisGridLine()
+                        AxisValueLabel()
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .day, count: 7)) {
+                        AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                    }
+                }
+                .frame(height: 170)
+                .accessibilityLabel("Consistency trend for \(habit.name)")
+
+                if let recent = trend.recentPercent, let previous = trend.previousPercent {
+                    Text("Last 7 days \(Int(recent.rounded()))% · Previous 7 days \(Int(previous.rounded()))%")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Keep tracking to compare your last two weeks.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(16)
+        .background(cardBackground)
+    }
+
+    private func trendTitle(_ direction: HabitTrendDirection) -> String {
+        switch direction {
+        case .building: return "Building trend"
+        case .rising: return "Bull trend"
+        case .falling: return "Bear trend"
+        case .steady: return "Holding steady"
+        }
+    }
+
+    private func trendSymbol(_ direction: HabitTrendDirection) -> String {
+        switch direction {
+        case .building: return "chart.line.uptrend.xyaxis"
+        case .rising: return "arrow.up.right"
+        case .falling: return "arrow.down.right"
+        case .steady: return "arrow.right"
+        }
+    }
+
     private var historyCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -252,7 +367,7 @@ struct HabitDetailsView: View {
                 }
             }
             .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(Color.accent)
+            .foregroundStyle(Color.habitGreen)
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 7), spacing: 5) {
                 ForEach(weekdayHeaders.indices, id: \.self) { index in
@@ -287,7 +402,7 @@ struct HabitDetailsView: View {
             VStack(spacing: 3) {
                 Text(date.formatted(.dateTime.day()))
                     .font(.system(size: 12, weight: selected ? .bold : .regular))
-                    .foregroundStyle(selected ? Color.accent : Color.primary.opacity(0.8))
+                    .foregroundStyle(selected ? Color.habitGreen : Color.primary.opacity(0.8))
                     .frame(height: 15)
 
                 calendarStatus(entry, on: date)
@@ -296,7 +411,7 @@ struct HabitDetailsView: View {
             .frame(maxWidth: .infinity)
             .frame(height: 52)
             .background(
-                selected ? Color.accent.opacity(0.16) : Color.clear,
+                selected ? Color.habitGreen.opacity(0.1) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 10)
             )
             .contentShape(Rectangle())
@@ -311,26 +426,35 @@ struct HabitDetailsView: View {
         switch habit.trackingMode {
         case .yesNo:
             if entry?.completed == true {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Color.green)
+                Image(systemName: "checkmark")
+                    .foregroundStyle(Color.habitGreen)
+            } else if entry?.completed == false {
+                Image(systemName: "xmark")
+                    .foregroundStyle(.secondary)
             } else if date <= Calendar.current.startOfDay(for: Date()) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(Color.red.opacity(0.85))
+                Text("·")
+                    .foregroundStyle(.secondary)
             }
         case .number:
-            let value = entry?.value ?? 0
-            Text(Self.formatCalendarNumber(value))
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(numberIsFailure(value, entry: entry) ? Color.red : Color.accent)
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
+            if let entry {
+                Text(Self.formatCalendarNumber(entry.value))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+            } else {
+                Text("·").foregroundStyle(.secondary)
+            }
         case .timer:
-            let value = entry?.value ?? 0
-            Text(value > 0 ? Self.formatCompactTime(value) : "0")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Color.accent)
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
+            if let entry, entry.value > 0 {
+                Text(Self.formatCompactTime(entry.value))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+            } else {
+                Text("·").foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -339,7 +463,7 @@ struct HabitDetailsView: View {
 
         return HStack(alignment: .top, spacing: 10) {
             Image(systemName: "calendar.day.timeline.left")
-                .foregroundStyle(Color.accent)
+                .foregroundStyle(Color.habitGreen)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(selectedDate.formatted(.dateTime.weekday(.wide).month(.wide).day()))
@@ -383,10 +507,6 @@ struct HabitDetailsView: View {
         }
     }
 
-    private func numberIsFailure(_ value: Double, entry: HabitEntry?) -> Bool {
-        entry?.completed == false || (habit.type == .build && value == 0)
-    }
-
     private var weekdayHeaders: [String] {
         let symbols = Calendar.current.veryShortStandaloneWeekdaySymbols
         let first = Calendar.current.firstWeekday - 1
@@ -411,7 +531,7 @@ struct HabitDetailsView: View {
     }
 
     private var cardBackground: some ShapeStyle {
-        Color.primary.opacity(0.045)
+        Color.habitSurface
     }
 
     private func changeMonth(by amount: Int) {
@@ -423,7 +543,6 @@ struct HabitDetailsView: View {
     private func saveDetails(
         notes newNotes: String? = nil,
         iconName newIcon: String? = nil,
-        iconColorHex newIconColor: String? = nil,
         goal newGoal: Double? = nil
     ) {
         let target: Double?
@@ -437,7 +556,7 @@ struct HabitDetailsView: View {
             for: habit,
             notes: newNotes ?? notes,
             iconName: newIcon ?? iconName,
-            iconColorHex: newIconColor ?? iconColorHex,
+            iconColorHex: habit.iconColorHex,
             goal: target
         )
     }
@@ -466,7 +585,6 @@ struct HabitDetailsView: View {
 struct HabitIconPickerView: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var selectedIcon: String
-    @Binding var selectedColorHex: String
 
     @State private var selectedCategory = "All"
     @State private var searchText = ""
@@ -499,35 +617,6 @@ struct HabitIconPickerView: View {
                 TextField("Search icons", text: $searchText)
                     .textFieldStyle(.roundedBorder)
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 14) {
-                        ForEach(HabitIconPalette.colors, id: \.hex) { color in
-                            Button {
-                                selectedColorHex = color.hex
-                            } label: {
-                                VStack(spacing: 5) {
-                                    Circle()
-                                        .fill(Color(hex: color.hex))
-                                        .frame(width: 28, height: 28)
-                                        .overlay {
-                                            if selectedColorHex == color.hex {
-                                                Circle()
-                                                    .stroke(.primary, lineWidth: 2)
-                                                    .padding(3)
-                                            }
-                                        }
-                                    Text(color.name)
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("\(color.name) icon color")
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 8) {
                     ForEach(symbols, id: \.self) { symbol in
                         Button {
@@ -537,7 +626,7 @@ struct HabitIconPickerView: View {
                                 ZStack(alignment: .topTrailing) {
                                     Image(systemName: symbol)
                                         .font(.system(size: 23, weight: .medium))
-                                        .foregroundStyle(selectedIcon == symbol ? Color.accent : Color.primary)
+                                        .foregroundStyle(.primary)
                                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                                 }
@@ -552,7 +641,7 @@ struct HabitIconPickerView: View {
                             .frame(maxWidth: .infinity)
                             .frame(height: 62)
                             .background(
-                                selectedIcon == symbol ? Color.accent.opacity(0.16) : Color.primary.opacity(0.045),
+                                selectedIcon == symbol ? Color.habitGreen.opacity(0.12) : Color.habitSurface,
                                 in: RoundedRectangle(cornerRadius: 10)
                             )
                         }
@@ -621,7 +710,7 @@ struct HabitPresetPickerView: View {
             HStack(spacing: 12) {
                 Image(systemName: symbol)
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Color(hex: preset.colorHex))
+                    .foregroundStyle(.primary)
                     .frame(width: 34)
 
                 VStack(alignment: .leading, spacing: 3) {

@@ -49,6 +49,31 @@ public struct HabitRepository: Sendable {
         }
     }
 
+    public func selectedWidgetHabitID() throws -> UUID? {
+        try locked {
+            let setting = directory.appendingPathComponent("widget-habit.json")
+            guard FileManager.default.fileExists(atPath: setting.path) else { return nil }
+            return try JSONDecoder().decode(UUID.self, from: Data(contentsOf: setting))
+        }
+    }
+
+    /// Adds cloud-only habits while preserving local edits made during the download.
+    public func mergeFromCloud(_ remote: [Habit], selectedWidgetID: UUID?) throws -> [Habit] {
+        try locked {
+            var local = try read()
+            var ids = Set(local.map(\.id))
+            for habit in remote where ids.insert(habit.id).inserted { local.append(habit) }
+            try JSONEncoder().encode(local).write(to: file, options: .atomic)
+            let setting = directory.appendingPathComponent("widget-habit.json")
+            if !FileManager.default.fileExists(atPath: setting.path),
+               let selectedWidgetID,
+               ids.contains(selectedWidgetID) {
+                try JSONEncoder().encode(selectedWidgetID).write(to: setting, options: .atomic)
+            }
+            return local
+        }
+    }
+
     public func widgetHabit() throws -> Habit? {
         try locked {
             let habits = try read()
@@ -90,6 +115,20 @@ public struct HabitRepository: Sendable {
                     continue
                 }
                 guard let index = current.firstIndex(where: { $0.id == habit.id }) else { continue }
+                var desiredHabit = habit
+                let changedMode = before.trackingMode != habit.trackingMode
+                if changedMode && current[index].trackingMode == before.trackingMode {
+                    var history = desiredHabit.archivedTrackingHistory ?? [:]
+                    var previousMode = history[before.trackingMode.rawValue]
+                        ?? TrackingHistory(entries: before.entries, goal: before.goal)
+                    for date in Set(before.entries.keys).union(current[index].entries.keys)
+                    where current[index].entries[date] != before.entries[date]
+                        && previousMode.entries[date] == before.entries[date] {
+                        previousMode.entries[date] = current[index].entries[date]
+                    }
+                    history[before.trackingMode.rawValue] = previousMode
+                    desiredHabit.archivedTrackingHistory = history
+                }
                 let encoder = JSONEncoder()
                 func object(_ value: Habit) throws -> [String: Any] {
                     guard let result = try JSONSerialization.jsonObject(with: encoder.encode(value)) as? [String: Any] else {
@@ -97,10 +136,14 @@ public struct HabitRepository: Sendable {
                     }
                     return result
                 }
-                let a = try object(before), b = try object(habit)
+                let a = try object(before), b = try object(desiredHabit)
                 var merged = try object(current[index])
                 for key in Set(a.keys).union(b.keys) {
                     if key == "entries" {
+                        if changedMode {
+                            merged[key] = b[key] ?? [:]
+                            continue
+                        }
                         let previous = a[key] as? [String: Any] ?? [:]
                         let next = b[key] as? [String: Any] ?? [:]
                         var entries = merged[key] as? [String: Any] ?? [:]

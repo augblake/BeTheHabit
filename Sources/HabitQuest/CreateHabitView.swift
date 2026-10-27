@@ -10,7 +10,6 @@ struct CreateHabitView: View {
     @State private var trackingMode: TrackingMode = .yesNo
     @State private var goal = ""
     @State private var iconName: String?
-    @State private var iconColorHex: String?
 
     private var canCreate: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -31,17 +30,13 @@ struct CreateHabitView: View {
                             selectedIcon: Binding(
                                 get: { iconName ?? defaultIcon },
                                 set: { iconName = $0 }
-                            ),
-                            selectedColorHex: Binding(
-                                get: { iconColorHex ?? defaultIconColorHex },
-                                set: { iconColorHex = $0 }
                             )
                         )
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: iconName ?? defaultIcon)
                                 .font(.system(size: 21, weight: .semibold))
-                                .foregroundStyle(Color(hex: iconColorHex ?? defaultIconColorHex))
+                                .foregroundStyle(.primary)
                                 .frame(width: 34)
 
                             Text("Choose Icon")
@@ -64,7 +59,6 @@ struct CreateHabitView: View {
                             type = preset.suggestedType
                             trackingMode = preset.suggestedTrackingMode
                             iconName = HabitPresetCatalog.availableSymbol(for: preset)
-                            iconColorHex = preset.colorHex
                             goal = ""
                         }
                     } label: {
@@ -159,7 +153,7 @@ struct CreateHabitView: View {
             trackingMode: trackingMode,
             goal: goalValue,
             iconName: iconName,
-            iconColorHex: iconColorHex
+            iconColorHex: nil
         )
 
         dismiss()
@@ -174,13 +168,6 @@ struct CreateHabitView: View {
         return HabitIconCatalog.defaultSymbol(for: draft)
     }
 
-    private var defaultIconColorHex: String {
-        guard let preset = HabitPresetCatalog.preset(for: name),
-              (iconName ?? defaultIcon) == HabitPresetCatalog.availableSymbol(for: preset) else {
-            return HabitIconPalette.defaultHex
-        }
-        return preset.colorHex
-    }
 }
 
 #Preview {

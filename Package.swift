@@ -2,7 +2,7 @@
 import PackageDescription
 let package = Package(
     name: "HabitQuest",
-    platforms: [.iOS(.v17), .macOS(.v14)],
+    platforms: [.iOS(.v16), .macOS(.v14)],
     products: [
         .library(name: "HabitQuest", targets: ["HabitQuest"]),
         .library(name: "BeHabitWidget", targets: ["BeHabitWidget"])

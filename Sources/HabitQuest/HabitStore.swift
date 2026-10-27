@@ -37,7 +37,12 @@ final class HabitStore: ObservableObject {
     }
 
     func deleteHabit(_ habit: Habit) {
-        habits.removeAll { $0.id == habit.id }
+        deleteHabits(ids: [habit.id])
+    }
+
+    func deleteHabits(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        habits.removeAll { ids.contains($0.id) }
         save()
     }
 
@@ -65,6 +70,45 @@ final class HabitStore: ObservableObject {
     func showInWidget(_ habit: Habit) throws {
         let shared = try HabitRepository.shared()
         try shared.selectWidgetHabit(id: habit.id)
+        WidgetCenter.shared.reloadAllTimelines()
+        CloudHabitBackup.shared.changed()
+    }
+
+    func cloudBackup() throws -> HabitBackup {
+        guard let repository else { throw HabitRepository.RepositoryError.unavailable }
+        let defaults = UserDefaults.standard
+        return HabitBackup(
+            habits: try repository.load(),
+            selectedWidgetHabitID: try repository.selectedWidgetHabitID(),
+            lightAppearance: defaults.bool(forKey: "habitquest.lightAppearance"),
+            introductionSeen: defaults.bool(forKey: "habitquest.introductionSeen"),
+            momentumDaysData: defaults.data(forKey: "habitquest.momentumDays"),
+            momentumHistorySeeded: defaults.bool(forKey: "habitquest.momentumHistorySeeded"),
+            sharingOwnerName: defaults.string(forKey: "behabit.shareName"),
+            ownedShareIDs: (defaults.stringArray(forKey: "behabit.ownedShares") ?? [])
+                .compactMap(UUID.init(uuidString:)).sorted { $0.uuidString < $1.uuidString }
+        )
+    }
+
+    func restoreFromCloud(_ backup: HabitBackup) throws {
+        guard backup.version == 1 else { throw HabitRepository.RepositoryError.corruptData }
+        guard let repository else { throw HabitRepository.RepositoryError.unavailable }
+        let hadLocalHabits = !habits.isEmpty
+        habits = try repository.mergeFromCloud(backup.habits, selectedWidgetID: backup.selectedWidgetHabitID)
+        baseline = habits
+        if !hadLocalHabits {
+            let defaults = UserDefaults.standard
+            defaults.set(backup.lightAppearance, forKey: "habitquest.lightAppearance")
+            defaults.set(backup.introductionSeen, forKey: "habitquest.introductionSeen")
+            defaults.set(backup.momentumDaysData, forKey: "habitquest.momentumDays")
+            defaults.set(backup.momentumHistorySeeded, forKey: "habitquest.momentumHistorySeeded")
+            if let name = backup.sharingOwnerName {
+                defaults.set(name, forKey: "behabit.shareName")
+            }
+            if let ids = backup.ownedShareIDs {
+                CloudHabitSharing.shared.restoreOwnedShares(ids, habits: habits)
+            }
+        }
         WidgetCenter.shared.reloadAllTimelines()
     }
 
@@ -97,6 +141,57 @@ final class HabitStore: ObservableObject {
             }
         }
 
+        save()
+    }
+
+    func editHabit(
+        _ habit: Habit,
+        name: String,
+        trackingMode: TrackingMode,
+        goal: Double?,
+        iconName: String,
+        iconColorHex: String
+    ) {
+        guard let index = habits.firstIndex(where: { $0.id == habit.id }) else { return }
+        let cleanedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedName.isEmpty else { return }
+
+        if trackingMode != habits[index].trackingMode,
+           let startedAt = habits[index].timerStartedAt {
+            let date = habits[index].timerStartedFor ?? Date()
+            let key = Habit.dateKey(date)
+            let seconds = (habits[index].entries[key]?.value ?? 0)
+                + max(0, Date().timeIntervalSince(startedAt))
+            habits[index].entries[key] = HabitEntry(
+                value: seconds,
+                completed: completionStatus(
+                    type: habits[index].type,
+                    mode: .timer,
+                    value: seconds,
+                    goal: habits[index].goal
+                )
+            )
+            habits[index].timerStartedAt = nil
+            habits[index].timerStartedFor = nil
+        }
+
+        habits[index].changeTrackingMode(to: trackingMode)
+        habits[index].name = cleanedName
+        habits[index].iconName = iconName
+        habits[index].iconColorHex = iconColorHex
+        habits[index].goal = trackingMode == .yesNo ? nil : goal
+        if trackingMode != .yesNo {
+            for key in Array(habits[index].entries.keys) {
+                guard var entry = habits[index].entries[key] else { continue }
+                entry.completed = completionStatus(
+                    type: habits[index].type,
+                    mode: trackingMode,
+                    value: entry.value,
+                    goal: habits[index].goal
+                )
+                habits[index].entries[key] = entry
+            }
+        }
         save()
     }
 
@@ -252,14 +347,19 @@ final class HabitStore: ObservableObject {
             }
             baseline = habits
             WidgetCenter.shared.reloadAllTimelines()
+            CloudHabitBackup.shared.changed()
         } catch { print("BeHabit save error:", error) }
     }
 
     func refresh() {
         guard let repository else { return }
         do {
-            habits = try repository.load()
-            baseline = habits
+            let loaded = try repository.load()
+            if loaded != habits {
+                habits = loaded
+                CloudHabitBackup.shared.changed()
+            }
+            baseline = loaded
         } catch { print("BeHabit refresh error:", error) }
     }
 

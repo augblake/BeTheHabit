@@ -9,6 +9,7 @@ public struct SharedHabitSnapshot: Codable, Equatable {
     public init(habit: Habit, ownerName: String, updatedAt: Date = Date()) {
         var shared = habit
         shared.notes = nil
+        shared.archivedTrackingHistory = nil
         self.habit = shared
         self.ownerName = ownerName
         self.updatedAt = updatedAt

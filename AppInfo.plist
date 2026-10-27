@@ -7,11 +7,20 @@
 		<integer>1</integer>
 	</array>
 	<key>BeHabitCloudSharingEnabled</key>
-	<true/>
+	<false/>
 	<key>CFBundleDisplayName</key>
 	<string>BeTheHabit</string>
 	<key>CFBundleName</key>
 	<string>BeTheHabit</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>bethehabit</string>
+			</array>
+		</dict>
+	</array>
 	<key>CKSharingSupported</key>
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>

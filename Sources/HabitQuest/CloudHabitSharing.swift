@@ -26,6 +26,7 @@ final class CloudHabitSharing: ObservableObject {
     static let shared = CloudHabitSharing()
     static let containerIdentifier = "iCloud.com.bryceblake.BeHabit"
     @Published private(set) var friends: [FriendHabit] = []
+    @Published private(set) var leavingIDs: Set<String> = []
     @Published var message: String?
     @Published private(set) var busy = false
     private let defaults = UserDefaults.standard
@@ -33,6 +34,8 @@ final class CloudHabitSharing: ObservableObject {
     private var syncTask: Task<Void, Never>?
     private var syncing = false
     private var refreshing = false
+    private var refreshError: String?
+    private var syncError: String?
     private var latestHabits: [Habit] = []
     private let zoneID = CKRecordZone.ID(zoneName: "BeHabitShares", ownerName: CKCurrentUserDefaultName)
 
@@ -45,7 +48,7 @@ final class CloudHabitSharing: ObservableObject {
     }
 
     private init() {
-        if let data = defaults.data(forKey: "behabit.friendHabits"),
+        if enabled, let data = defaults.data(forKey: "behabit.friendHabits"),
            let saved = try? JSONDecoder().decode([FriendHabit].self, from: data) { friends = saved }
         owned = Set((defaults.stringArray(forKey: "behabit.ownedShares") ?? []).compactMap(UUID.init(uuidString:)))
     }
@@ -53,6 +56,12 @@ final class CloudHabitSharing: ObservableObject {
     private func persist() {
         defaults.set(try? JSONEncoder().encode(friends), forKey: "behabit.friendHabits")
         defaults.set(owned.map(\.uuidString), forKey: "behabit.ownedShares")
+    }
+
+    func restoreOwnedShares(_ ids: [UUID], habits: [Habit]) {
+        owned = Set(ids)
+        defaults.set(owned.map(\.uuidString), forKey: "behabit.ownedShares")
+        changed(habits)
     }
 
     private func requireAccount() async throws {
@@ -122,23 +131,15 @@ final class CloudHabitSharing: ObservableObject {
         defer { refreshing = false }
         await synchronize()
         do {
+            try Task.checkCancellation()
             try await requireAccount()
             // Discover accepted shares after reinstall and shares accepted on another device.
             let zones = try await container.sharedCloudDatabase.allRecordZones()
             for zone in zones {
-                let operation = CKFetchRecordZoneChangesOperation(recordZoneIDs: [zone.zoneID], configurationsByRecordZoneID: nil)
-                var records: [CKRecord] = []
-                // Use a serial operation queue callback bridge; collect under a lock.
-                let collector = SharedRecordCollector()
-                operation.recordWasChangedBlock = { _, result in
-                    if case .success(let record) = result { collector.append(record) }
+                try Task.checkCancellation()
+                for record in try await records(in: zone.zoneID) where record.recordType == "SharedHabit" {
+                    try cache(record)
                 }
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    operation.fetchRecordZoneChangesResultBlock = { result in continuation.resume(with: result) }
-                    self.container.sharedCloudDatabase.add(operation)
-                }
-                records = collector.records
-                for record in records where record.recordType == "SharedHabit" { try cache(record) }
             }
             // Fetch known roots directly, so revocations remove stale cached rows.
             for friend in friends {
@@ -148,16 +149,89 @@ final class CloudHabitSharing: ObservableObject {
                 }
             }
             persist()
-        } catch { message = "Sharing could not refresh. \(error.localizedDescription)" }
+            if message == refreshError { message = nil }
+            refreshError = nil
+        } catch is CancellationError {
+            // View tasks can end while a CloudKit request is in flight.
+        } catch let error as CKError where error.code == .operationCancelled {
+            // A later foreground or pull-to-refresh request will retry.
+        } catch {
+            refreshError = "Sharing could not refresh. \(error.localizedDescription)"
+            message = refreshError
+        }
+    }
+
+    private func records(in zoneID: CKRecordZone.ID) async throws -> [CKRecord] {
+        for attempt in 0..<2 {
+            do {
+                let operation = CKFetchRecordZoneChangesOperation(recordZoneIDs: [zoneID], configurationsByRecordZoneID: nil)
+                operation.fetchAllChanges = true
+                let collector = SharedRecordCollector()
+                operation.recordWasChangedBlock = { _, result in
+                    if case .success(let record) = result { collector.append(record) }
+                }
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    operation.fetchRecordZoneChangesResultBlock = { result in continuation.resume(with: result) }
+                    self.container.sharedCloudDatabase.add(operation)
+                }
+                try Task.checkCancellation()
+                return collector.records
+            } catch let error as CKError where error.code == .operationCancelled && attempt == 0 && !Task.isCancelled {
+                try await Task.sleep(for: .milliseconds(500))
+            }
+        }
+        throw CancellationError()
     }
 
     private func cache(_ record: CKRecord) throws {
+        let zone = record.recordID.zoneID
+        let id = "\(zone.ownerName)/\(zone.zoneName)/\(record.recordID.recordName)"
+        guard !leavingIDs.contains(id) else { return }
         guard let data = record["snapshot"] as? Data else { return }
         let snapshot = try JSONDecoder().decode(SharedHabitSnapshot.self, from: data)
-        let zone = record.recordID.zoneID
         let friend = FriendHabit(owner: zone.ownerName, zone: zone.zoneName, record: record.recordID.recordName, snapshot: snapshot)
         if let index = friends.firstIndex(where: { $0.id == friend.id }) { friends[index] = friend }
         else { friends.append(friend) }
+    }
+
+    @discardableResult
+    func leaveSharedHabit(id: String) async -> Bool {
+        guard let friend = friends.first(where: { $0.id == id }), !leavingIDs.contains(id) else { return false }
+        leavingIDs.insert(id)
+        defer { leavingIDs.remove(id) }
+        do {
+            try await requireAccount()
+            let database = container.sharedCloudDatabase
+            let root: CKRecord
+            do { root = try await database.record(for: friend.recordID) }
+            catch let error as CKError where error.code == .unknownItem
+                    || error.code == .permissionFailure || error.code == .zoneNotFound {
+                friends.removeAll { $0.id == id }
+                persist()
+                return true
+            }
+            // Deleting a share from the participant's shared database leaves
+            // that share; the owner's private root record remains intact.
+            if let shareID = root.share?.recordID {
+                do { _ = try await database.deleteRecord(withID: shareID) }
+                catch let error as CKError where error.code == .permissionFailure
+                        || error.code == .unknownItem {
+                    // CloudKit also supports leaving by deleting the shared root.
+                    _ = try await database.deleteRecord(withID: root.recordID)
+                }
+            } else {
+                _ = try await database.deleteRecord(withID: root.recordID)
+            }
+        } catch let error as CKError where error.code == .unknownItem
+                || error.code == .zoneNotFound {
+            // The owner may already have revoked this invitation.
+        } catch {
+            message = "Could not remove shared habit. \(error.localizedDescription)"
+            return false
+        }
+        friends.removeAll { $0.id == id }
+        persist()
+        return true
     }
 
     private func synchronize() async {
@@ -169,7 +243,10 @@ final class CloudHabitSharing: ObservableObject {
             for id in Array(owned) {
                 let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
                 guard let habit = latestHabits.first(where: { $0.id == id }) else {
-                    _ = try await container.privateCloudDatabase.deleteRecord(withID: recordID)
+                    do { _ = try await container.privateCloudDatabase.deleteRecord(withID: recordID) }
+                    catch let error as CKError where error.code == .unknownItem {
+                        // Already removed on another device; finish local cleanup too.
+                    }
                     owned.remove(id)
                     persist()
                     continue
@@ -186,7 +263,16 @@ final class CloudHabitSharing: ObservableObject {
                 root["snapshot"] = try JSONEncoder().encode(updated) as CKRecordValue
                 _ = try await container.privateCloudDatabase.save(root)
             }
-        } catch { message = "Sharing could not sync. \(error.localizedDescription)" }
+            if message == syncError { message = nil }
+            syncError = nil
+        } catch is CancellationError {
+            // The initiating view task ended.
+        } catch let error as CKError where error.code == .operationCancelled {
+            // A later sync will retry.
+        } catch {
+            syncError = "Sharing could not sync. \(error.localizedDescription)"
+            message = syncError
+        }
     }
 
     func accept(_ metadata: CKShare.Metadata) async {

@@ -4,6 +4,7 @@ import UIKit
 
 struct ContentView: View {
     @ObservedObject private var sharing = CloudHabitSharing.shared
+    @ObservedObject private var backup = CloudHabitBackup.shared
     @EnvironmentObject private var store: HabitStore
 
     @State private var activeSheet: ActiveSheet?
@@ -11,20 +12,39 @@ struct ContentView: View {
     @State private var numberText = ""
     @State private var numberDate = Date()
     @State private var selectedDate = Calendar.current.startOfDay(for: Date())
+    @State private var today = Date()
     @State private var showingAboutPopup = false
     @State private var showingIntroduction = false
+    @State private var showPreviewAfterIntroduction = false
+    @State private var showingMomentumPreview = false
+    @State private var momentumPreviewOpacity = 1.0
+    @State private var momentumPreviewReady = false
+    @State private var momentumPreviewFading = false
     @State private var draggingHabitID: UUID?
+    @State private var focusedHabitID: UUID?
+    @State private var isSelectingHabits = false
+    @State private var selectedHabitIDs: Set<UUID> = []
+    @State private var habitIDsPendingDeletion: Set<UUID> = []
+    @State private var showingDeleteConfirmation = false
+    @State private var showingSharingUnavailable = false
     @State private var dragStartIndex = 0
     @State private var dragTranslation: CGFloat = 0
     @State private var suppressHabitTapUntil = Date.distantPast
     @GestureState private var reorderGestureActive = false
     @AppStorage("habitquest.lightAppearance") private var lightAppearance = false
     @AppStorage("habitquest.introductionSeen") private var introductionSeen = false
+    @AppStorage("habitquest.momentumDays") private var momentumDaysData = Data()
+    @AppStorage("habitquest.momentumHistorySeeded") private var momentumHistorySeeded = false
+
+    private let habitNameWidth: CGFloat = 120
+    private let visibleDayCount = 5
 
     private enum ActiveSheet: Identifiable {
         case createHabit
         case stopwatch(Habit, Date)
         case details(Habit)
+        case editHabit(Habit)
+        case shareHabit(Habit)
 
         var id: String {
             switch self {
@@ -34,6 +54,10 @@ struct ContentView: View {
                 return "stopwatch-\(habit.id)"
             case .details(let habit):
                 return "details-\(habit.id)"
+            case .editHabit(let habit):
+                return "edit-\(habit.id)"
+            case .shareHabit(let habit):
+                return "share-\(habit.id)"
             }
         }
     }
@@ -44,25 +68,30 @@ struct ContentView: View {
                 Color.background
                     .ignoresSafeArea()
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        header
-                        calendarGrid
-                        FriendHabitsView()
+                VStack(spacing: 0) {
+                    if let focusedHabit = store.habits.first(where: { $0.id == focusedHabitID }),
+                       !isSelectingHabits {
+                        habitActionBar(for: focusedHabit)
                     }
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            if sharing.message != nil {
+                                SharingErrorView().padding()
+                            }
+                            header
+                            calendarGrid
+                            FriendHabitsView()
+                        }
+                    }
+                    .refreshable {
+                        store.refresh()
+                        await sharing.refresh(store.habits)
+                    }
+                    .scrollDisabled(draggingHabitID != nil)
                 }
-                .refreshable {
-                    store.refresh()
-                    await sharing.refresh(store.habits)
-                }
-                .scrollDisabled(draggingHabitID != nil)
+                .animation(.easeInOut(duration: 0.2), value: focusedHabitID)
             }
-            .alert("Habit Sharing", isPresented: Binding(
-                get: { sharing.message != nil },
-                set: { if !$0 { sharing.message = nil } }
-            )) {
-                Button("OK", role: .cancel) { sharing.message = nil }
-            } message: { Text(sharing.message ?? "") }
             .sheet(item: $activeSheet) { sheet in
                 switch sheet {
                 case .createHabit:
@@ -71,6 +100,12 @@ struct ContentView: View {
                     StopwatchView(habit: habit, selectedDate: date)
                 case .details(let habit):
                     HabitDetailsView(habit: habit)
+                case .editHabit(let habit):
+                    NavigationStack {
+                        EditHabitView(habit: habit) { }
+                    }
+                case .shareHabit(let habit):
+                    ShareHabitView(habit: habit)
                 }
             }
             .alert(
@@ -97,29 +132,106 @@ struct ContentView: View {
                     numberHabit = nil
                 }
             }
-            .fullScreenCover(isPresented: $showingIntroduction) {
+            .confirmationDialog(
+                habitIDsPendingDeletion.count == 1 ? "Delete habit?" : "Delete \(habitIDsPendingDeletion.count) habits?",
+                isPresented: $showingDeleteConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(habitIDsPendingDeletion.count == 1 ? "Delete Habit" : "Delete Habits", role: .destructive) {
+                    store.deleteHabits(ids: habitIDsPendingDeletion)
+                    habitIDsPendingDeletion.removeAll()
+                    selectedHabitIDs.removeAll()
+                    isSelectingHabits = false
+                    focusedHabitID = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    habitIDsPendingDeletion.removeAll()
+                }
+            } message: {
+                Text("This permanently removes the selected habits and their history.")
+            }
+            .fullScreenCover(isPresented: $showingIntroduction, onDismiss: {
+                if showPreviewAfterIntroduction {
+                    showPreviewAfterIntroduction = false
+                    startMomentumPreview()
+                }
+            }) {
                 HabitIntroductionView {
                     introductionSeen = true
+                    showPreviewAfterIntroduction = true
                     showingIntroduction = false
                 }
             }
             .onAppear {
+                today = Date()
+                recordMomentumUse()
                 if !introductionSeen {
                     showingIntroduction = true
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+                today = Date()
+                recordMomentumUse()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                today = Date()
+                recordMomentumUse()
+            }
+            .onOpenURL(perform: openWidgetHabit)
+        }
+        .overlay {
+            if showingMomentumPreview {
+                MomentumPreviewView(readyToContinue: momentumPreviewReady)
+                    .opacity(momentumPreviewOpacity)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: dismissMomentumPreview)
+                    .allowsHitTesting(true)
+                    .accessibilityAddTraits(.isModal)
+                    .accessibilityAction(named: "Continue") { dismissMomentumPreview() }
             }
         }
         .preferredColorScheme(lightAppearance ? .light : .dark)
     }
 
+    private func startMomentumPreview() {
+        momentumPreviewOpacity = 1
+        momentumPreviewReady = false
+        momentumPreviewFading = false
+        showingMomentumPreview = true
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard showingMomentumPreview else { return }
+            withAnimation(.easeIn(duration: 0.25)) { momentumPreviewReady = true }
+        }
+    }
+
+    private func dismissMomentumPreview() {
+        guard momentumPreviewReady, !momentumPreviewFading else { return }
+        momentumPreviewFading = true
+        withAnimation(.easeInOut(duration: 2)) {
+            momentumPreviewOpacity = 0
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.1))
+            showingMomentumPreview = false
+        }
+    }
+
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Habits")
-                    .font(.system(size: 32, weight: .bold))
-                    .foregroundStyle(.primary)
+                Text("BeTheHabit")
+                    .font(.system(size: momentumTitleSize, weight: momentumTitleWeight))
+                    .foregroundStyle(momentumDays >= 14 ? streakGold : Color.primary)
+                    .shadow(
+                        color: momentumDays >= 7 ? streakGold.opacity(momentumDays >= 14 ? 0.5 : 0.25) : .clear,
+                        radius: momentumDays >= 14 ? 12 : 6
+                    )
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
 
-                Text(selectedDateString)
+                Text("\(momentumDays) \(momentumDays == 1 ? "day" : "days") of momentum")
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
             }
@@ -140,6 +252,11 @@ struct ContentView: View {
             }
 
             Menu {
+                Button(backup.status, systemImage: "icloud") { }
+                    .disabled(true)
+
+                Divider()
+
                 Button {
                     lightAppearance = true
                 } label: {
@@ -159,6 +276,10 @@ struct ContentView: View {
 
                 Divider()
 
+                Button("View Introduction", systemImage: "questionmark.circle") {
+                    showingIntroduction = true
+                }
+
                 Button("About", systemImage: "quote.opening") {
                     showingAboutPopup = true
                 }
@@ -173,7 +294,7 @@ struct ContentView: View {
             .alert("Thanks for using the app, Bryce Blake!", isPresented: $showingAboutPopup) {
                 Button("Close", role: .cancel) { }
             } message: {
-                Text("“Let us not grow weary of doing good, for in due season we will reap, if we do not give up.”\n— Galatians 6:9 (ESV)\n\nBryce Blake\n\nScripture quotations are from the ESV® Bible (The Holy Bible, English Standard Version®), © 2001 by Crossway, a publishing ministry of Good News Publishers. ESV Text Edition: 2025. The ESV text may not be quoted in any publication made available to the public by a Creative Commons license. The ESV may not be translated in whole or in part into any other language. Used by permission. All rights reserved.")
+                Text("“And let us not be weary in well doing: for in due season we shall reap, if we faint not.”\n— Galatians 6:9 (KJV)\n\nBryce Blake")
             }
         }
         .padding(.horizontal, 20)
@@ -181,15 +302,153 @@ struct ContentView: View {
         .padding(.bottom, 24)
     }
 
+    private func habitActionBar(for habit: Habit) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: habit.iconName ?? HabitIconCatalog.defaultSymbol(for: habit))
+                    .foregroundStyle(Color.accent)
+                Text(habit.name)
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Button {
+                    focusedHabitID = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityLabel("Close habit actions")
+            }
+
+            HStack(spacing: 8) {
+                habitAction("Edit", symbol: "pencil") {
+                    activeSheet = .editHabit(habit)
+                }
+                habitAction("Invite Friend", symbol: "person.badge.plus") {
+                    if sharing.enabled {
+                        activeSheet = .shareHabit(habit)
+                    } else {
+                        showingSharingUnavailable = true
+                    }
+                }
+                habitAction("Delete", symbol: "trash", destructive: true) {
+                    confirmDelete([habit.id])
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Divider() }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Actions for \(habit.name)")
+        .alert("Friend sharing unavailable", isPresented: $showingSharingUnavailable) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("This build needs iCloud sharing enabled before you can invite a friend.")
+        }
+    }
+
+    private func habitAction(
+        _ title: String,
+        symbol: String,
+        destructive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(
+                    destructive ? Color.red.opacity(0.12) : Color.primary.opacity(0.07),
+                    in: RoundedRectangle(cornerRadius: 11)
+                )
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(destructive ? Color.red : Color.primary)
+    }
+
+    private var momentumDays: Int {
+        max(1, Set((try? JSONDecoder().decode([String].self, from: momentumDaysData)) ?? []).count)
+    }
+
+    private var momentumTitleSize: CGFloat {
+        min(30, 26 + CGFloat(max(0, momentumDays - 1)) / 7)
+    }
+
+    private var momentumTitleWeight: Font.Weight {
+        switch momentumDays {
+        case ..<2: .light
+        case 2..<4: .regular
+        case 4..<7: .medium
+        case 7..<14: .semibold
+        case 14..<30: .bold
+        default: .heavy
+        }
+    }
+
+    private func recordMomentumUse() {
+        let todayKey = Habit.dateKey(Date())
+        var days = Set((try? JSONDecoder().decode([String].self, from: momentumDaysData)) ?? [])
+
+        if !momentumHistorySeeded {
+            for habit in store.habits {
+                days.formUnion(habit.entries.keys.filter { $0 <= todayKey })
+                for history in habit.archivedTrackingHistory?.values ?? Dictionary<String, TrackingHistory>().values {
+                    days.formUnion(history.entries.keys.filter { $0 <= todayKey })
+                }
+            }
+            momentumHistorySeeded = true
+        }
+
+        days.insert(todayKey)
+        if let encoded = try? JSONEncoder().encode(days.sorted()), encoded != momentumDaysData {
+            momentumDaysData = encoded
+        }
+    }
+
     private var calendarGrid: some View {
         let habits = store.habits
 
         return VStack(spacing: 3) {
+            if !habits.isEmpty {
+                HStack {
+                    if isSelectingHabits {
+                        Button("Cancel") {
+                            isSelectingHabits = false
+                            selectedHabitIDs.removeAll()
+                        }
+                        Spacer()
+                        Text("\(selectedHabitIDs.count) selected")
+                            .foregroundStyle(.secondary)
+                        Button("Delete") {
+                            confirmDelete(selectedHabitIDs)
+                        }
+                        .foregroundStyle(.red)
+                        .disabled(selectedHabitIDs.isEmpty)
+                    } else {
+                        Spacer()
+                        Button("Select") {
+                            focusedHabitID = nil
+                            isSelectingHabits = true
+                        }
+                    }
+                }
+                .font(.system(size: 14, weight: .medium))
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+            }
+
             HStack(spacing: 3) {
                 Color.clear
-                    .frame(width: 48, height: 60)
+                    .frame(width: habitNameWidth, height: 60)
 
-                ForEach(weekDays, id: \.self) { date in
+                ForEach(visibleDays, id: \.self) { date in
                     let isSelected = Calendar.current.isDate(date, inSameDayAs: selectedDate)
 
                     Button {
@@ -198,16 +457,16 @@ struct ContentView: View {
                         VStack(spacing: 4) {
                             Text(dayLetter(date))
                                 .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(isSelected ? Color.accent : Color.secondary)
+                                .foregroundStyle(isSelected ? completionGreen : Color.secondary)
 
                             Text(dayNumber(date))
                                 .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(isSelected ? Color.accent : Color.primary)
+                                .foregroundStyle(isSelected ? completionGreen : Color.primary)
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: 60)
                         .background(
-                            isSelected ? Color.accent.opacity(0.23) : Color.clear,
+                            isSelected ? completionGreen.opacity(0.1) : Color.clear,
                             in: RoundedRectangle(cornerRadius: 15)
                         )
                         .contentShape(Rectangle())
@@ -224,18 +483,52 @@ struct ContentView: View {
             } else {
                 LazyVStack(spacing: 4) {
                     ForEach(habits) { habit in
-                        HStack(spacing: 3) {
-                            habitIconCell(habit)
+                        let streak = visibleStreak(for: habit)
 
-                            ForEach(weekDays, id: \.self) { date in
+                        HStack(spacing: 3) {
+                            habitNameCell(habit)
+
+                            ForEach(visibleDays, id: \.self) { date in
                                 habitDayCell(habit, date: date)
-                                }
+                            }
                         }
                         .frame(height: 62)
                         .background(
-                            Color.primary.opacity(0.045),
+                            selectedHabitIDs.contains(habit.id) ? Color.accentColor.opacity(0.14) :
+                            focusedHabitID == habit.id ? Color.accentColor.opacity(0.10) :
+                            streak > 0 ? streakGold.opacity(streak >= 4 ? 0.08 : 0.03) : Color.clear,
                             in: RoundedRectangle(cornerRadius: 17)
                         )
+                        .overlay {
+                            if streak > 0 {
+                                RoundedRectangle(cornerRadius: 17)
+                                    .strokeBorder(
+                                        streakGold.opacity(streak >= 4 ? 1 : 0.65),
+                                        lineWidth: streak >= 14 ? 3 : (streak >= 4 ? 2.5 : (streak >= 2 ? 1.5 : 1))
+                                    )
+                                    .shadow(
+                                        color: streakGold.opacity(streak >= 14 ? 0.55 : (streak >= 4 ? 0.35 : 0)),
+                                        radius: streak >= 14 ? 14 : 8
+                                    )
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .overlay(alignment: .trailing) {
+                            if isSelectingHabits {
+                                Button {
+                                    toggleSelection(habit)
+                                } label: {
+                                    Image(systemName: selectedHabitIDs.contains(habit.id) ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 23, weight: .semibold))
+                                        .foregroundStyle(selectedHabitIDs.contains(habit.id) ? Color.accentColor : Color.secondary)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                                        .padding(.trailing, 12)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("\(selectedHabitIDs.contains(habit.id) ? "Deselect" : "Select") \(habit.name)")
+                            }
+                        }
                         .contentShape(Rectangle())
                         .opacity(draggingHabitID == habit.id ? 0.65 : 1)
                         .offset(y: rowDragOffset(habit))
@@ -245,13 +538,14 @@ struct ContentView: View {
                             if draggingHabitID == habit.id { transaction.animation = nil }
                         }
                         .simultaneousGesture(reorderGesture(habit))
+                        .accessibilityAction(named: "Habit Actions") { focusedHabitID = habit.id }
                         .accessibilityAction(named: "Move Up") { store.moveHabit(habit, by: -1) }
                         .accessibilityAction(named: "Move Down") { store.moveHabit(habit, by: 1) }
                     }
                 }
                 .coordinateSpace(name: "habitRows")
                 .animation(.spring(response: 0.25, dampingFraction: 0.9), value: store.habits.map(\.id))
-                .onChange(of: reorderGestureActive) { _, active in
+                .onChange(of: reorderGestureActive) { active in
                     if !active { finishReorder() }
                 }
             }
@@ -280,6 +574,7 @@ struct ContentView: View {
                 case .first:
                     break
                 case .second(true, let drag):
+                    guard !isSelectingHabits else { return }
                     beginReorder(habit)
                     guard let drag, draggingHabitID == habit.id else { return }
                     dragTranslation = drag.translation.height
@@ -295,8 +590,9 @@ struct ContentView: View {
     }
 
     private func beginReorder(_ habit: Habit) {
-        guard draggingHabitID == nil,
+        guard !isSelectingHabits, draggingHabitID == nil,
               let index = store.habits.firstIndex(where: { $0.id == habit.id }) else { return }
+        focusedHabitID = habit.id
         dragStartIndex = index
         dragTranslation = 0
         draggingHabitID = habit.id
@@ -313,29 +609,47 @@ struct ContentView: View {
         }
     }
 
-    private func habitIconCell(_ habit: Habit) -> some View {
-        let streak = habit.currentStreak(today: selectedDate)
+    private func toggleSelection(_ habit: Habit) {
+        if selectedHabitIDs.contains(habit.id) {
+            selectedHabitIDs.remove(habit.id)
+        } else {
+            selectedHabitIDs.insert(habit.id)
+        }
+    }
 
+    private func confirmDelete(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        habitIDsPendingDeletion = ids
+        showingDeleteConfirmation = true
+    }
+
+    private func habitNameCell(_ habit: Habit) -> some View {
+        let streak = visibleStreak(for: habit)
         return Button {
-            guard draggingHabitID == nil, Date() >= suppressHabitTapUntil else { return }
+            guard !isSelectingHabits, draggingHabitID == nil, Date() >= suppressHabitTapUntil else { return }
+            focusedHabitID = nil
             activeSheet = .details(habit)
         } label: {
-            Image(systemName: icon(for: habit))
-                .font(.system(size: 25, weight: .semibold))
-                .foregroundStyle(iconColor(for: habit))
-                .frame(width: 48, height: 62)
-                .overlay(alignment: .topTrailing) {
-                    if streak > 0 {
-                        Text("\(streak)")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(Color.accent)
-                            .offset(x: 1, y: 2)
-                    }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(habit.name)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                if streak > 0 {
+                    Label("\(streak) day streak", systemImage: "sparkle")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(streakGold)
                 }
+            }
+            .padding(.horizontal, 10)
+            .frame(width: habitNameWidth, height: 62, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Details for \(habit.name)")
-        .accessibilityValue(streak > 0 ? "\(streak) day streak" : "")
+        .accessibilityValue("\(habit.isComplete(on: today) ? "Completed today" : "Not completed today")\(streak > 0 ? ", \(streak) day streak" : "")")
     }
 
     private func habitDayCell(_ habit: Habit, date: Date) -> some View {
@@ -345,83 +659,67 @@ struct ContentView: View {
             && Calendar.current.isDate(store.timerDate(habit, fallback: date), inSameDayAs: date)
 
         return Button {
-            guard draggingHabitID == nil, Date() >= suppressHabitTapUntil else { return }
+            guard !isSelectingHabits, draggingHabitID == nil, Date() >= suppressHabitTapUntil else { return }
+            focusedHabitID = nil
             selectedDate = Calendar.current.startOfDay(for: date)
             handleTap(habit, on: date)
         } label: {
-            Group {
-                if habit.trackingMode == .number {
-                    let value = entry?.value ?? 0
-                    let isFailure = entry?.completed == false
-                        || (habit.type == .build && value == 0)
-                    Text(formatValue(value))
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(isFailure ? Color.red.opacity(0.9) : Color.primary)
-                        .frame(width: 42, height: 42)
-                        .background(
-                            isFailure ? Color.red.opacity(0.3) : Color.blue.opacity(0.36),
-                            in: Circle()
-                        )
-                } else if isRunningOnDate {
-                    Image(systemName: "timer")
-                        .font(.system(size: 18, weight: .bold))
+            GeometryReader { geometry in
+                Group {
+                    if habit.trackingMode == .number, let entry {
+                        Text(formatValue(entry.value))
+                            .font(.system(size: 15, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.primary)
+                    } else if isRunningOnDate {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(formatGridDuration(store.timerElapsed(habit, on: date, at: context.date)))
+                                .contentTransition(.numericText())
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(.primary)
-                        .frame(width: 42, height: 42)
-                        .background(Color.red.opacity(0.7), in: Circle())
-                } else if habit.trackingMode == .timer {
-                    let value = entry?.value ?? 0
-                    let hasRecordedTime = value > 0
-                    Text(value > 0 ? formatCompactDuration(value) : "0")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(hasRecordedTime ? Color.primary : Color.red)
-                        .frame(width: 44, height: 44)
-                        .background((hasRecordedTime ? Color.blue : Color.red).opacity(0.3), in: Circle())
-                } else if entry?.completed == true {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 42, height: 42)
-                        .background(Color.green.opacity(0.48), in: Circle())
-                } else {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 19, weight: .bold))
-                        .foregroundStyle(Color.red.opacity(0.9))
-                        .frame(width: 42, height: 42)
-                    .background(Color.red.opacity(0.3), in: Circle())
+                    } else if habit.trackingMode == .timer, let entry, entry.value > 0 {
+                        Text(formatGridDuration(entry.value))
+                            .font(.system(size: 11, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.primary)
+                    } else if habit.trackingMode == .yesNo, entry?.completed == true {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(completionGreen)
+                    } else if habit.trackingMode == .yesNo, entry?.completed == false {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("·")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(width: geometry.size.width, height: 62)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity)
             .frame(height: 62)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(habit.name), \(date.formatted(.dateTime.month(.wide).day()))")
         .accessibilityValue(isRunningOnDate ? "Stopwatch running" : (entry?.completed == true ? "Complete" : "Not complete"))
     }
 
-    private func icon(for habit: Habit) -> String {
-        habit.iconName ?? HabitIconCatalog.defaultSymbol(for: habit)
+    private func visibleStreak(for habit: Habit) -> Int {
+        habit.visibleStreak(today: today)
     }
 
-    private func iconColor(for habit: Habit) -> Color {
-        if let iconColorHex = habit.iconColorHex {
-            return Color(hex: iconColorHex)
-        }
-        if let preset = HabitPresetCatalog.preset(for: habit.name) {
-            return Color(hex: preset.colorHex)
-        }
+    private var streakGold: Color {
+        .habitGold
+    }
 
-        switch icon(for: habit) {
-        case "drop.fill": return Color(red: 0.12, green: 0.64, blue: 0.98)
-        case "figure.run": return Color(red: 1.0, green: 0.35, blue: 0.32)
-        case "figure.mind.and.body": return Color(red: 0.62, green: 0.35, blue: 0.98)
-        case "book.fill": return Color(red: 1.0, green: 0.64, blue: 0.12)
-        case "dumbbell.fill": return Color(red: 0.55, green: 0.64, blue: 0.85)
-        case "moon.fill": return Color(red: 1.0, green: 0.75, blue: 0.18)
-        case "heart.fill": return Color(red: 1.0, green: 0.34, blue: 0.36)
-        case "leaf.fill": return Color(red: 0.32, green: 0.76, blue: 0.35)
-        default: return Color.accent
-        }
+    private var completionGreen: Color {
+        .habitGreen
     }
 
     private func handleTap(_ habit: Habit, on date: Date) {
@@ -436,6 +734,22 @@ struct ContentView: View {
 
         case .timer:
             activeSheet = .stopwatch(habit, date)
+        }
+    }
+
+    private func openWidgetHabit(_ url: URL) {
+        guard url.scheme == "bethehabit", url.host == "habit",
+              let id = UUID(uuidString: url.lastPathComponent) else { return }
+        store.refresh()
+        guard let habit = store.habits.first(where: { $0.id == id }) else { return }
+        selectedDate = Calendar.current.startOfDay(for: Date())
+        focusedHabitID = habit.id
+        if habit.trackingMode == .number {
+            numberHabit = habit
+            numberDate = Date()
+            numberText = habit.entry(for: numberDate).map { $0.value.formatted() } ?? ""
+        } else if habit.trackingMode == .timer {
+            activeSheet = .stopwatch(habit, Date())
         }
     }
 
@@ -462,7 +776,7 @@ struct ContentView: View {
             } label: {
                 Text("Create Habit")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.black)
+                    .foregroundStyle(Color.background)
                     .padding(.horizontal, 22)
                     .padding(.vertical, 13)
                     .background(Color.accent, in: Capsule())
@@ -474,28 +788,19 @@ struct ContentView: View {
         .padding(.top, 36)
     }
 
-    private var selectedDateString: String {
-        selectedDate.formatted(
-            .dateTime
-                .weekday(.wide)
-                .month(.abbreviated)
-                .day()
-        )
-    }
-
-    private var weekDays: [Date] {
+    private var visibleDays: [Date] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
 
         guard let start = calendar.date(
             byAdding: .day,
-            value: -6,
+            value: -(visibleDayCount - 1),
             to: today
         ) else {
             return [today]
         }
 
-        return (0..<7).compactMap {
+        return (0..<visibleDayCount).compactMap {
             calendar.date(byAdding: .day, value: $0, to: start)
         }
     }
@@ -514,13 +819,12 @@ struct ContentView: View {
             : String(format: "%.1f", value)
     }
 
-    private func formatCompactDuration(_ duration: TimeInterval) -> String {
-        let seconds = Int(duration)
-        guard seconds >= 60 else { return "\(max(1, seconds))s" }
-
-        let totalMinutes = seconds / 60
-        let hours = totalMinutes / 60
-        return hours > 0 ? "\(hours)h" : "\(totalMinutes)m"
+    private func formatGridDuration(_ duration: TimeInterval) -> String {
+        let seconds = max(0, Int(duration))
+        if seconds >= 3600 {
+            return String(format: "%d:%02d:%02d", seconds / 3600, (seconds / 60) % 60, seconds % 60)
+        }
+        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 }
 
@@ -583,10 +887,10 @@ private struct StopwatchView: View {
                 } label: {
                     Label(isRunning ? "Stop" : "Start", systemImage: isRunning ? "stop.fill" : "play.fill")
                         .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(isRunning ? .white : .black)
+                        .foregroundStyle(isRunning ? Color.primary : Color.background)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 15)
-                        .background(isRunning ? Color.red : Color.accent, in: Capsule())
+                        .background(isRunning ? Color.primary.opacity(0.1) : Color.accent, in: Capsule())
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 28)
@@ -679,11 +983,20 @@ private struct StopwatchView: View {
 extension Color {
     static let background = Color(uiColor: .systemBackground)
 
-    static let accent = Color(
-        red: 0.25,
-        green: 0.82,
-        blue: 0.82
-    )
+    static let habitGreen = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.44, green: 0.86, blue: 0.67, alpha: 1)
+            : UIColor(red: 0.09, green: 0.50, blue: 0.37, alpha: 1)
+    })
+
+    static let habitGold = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.91, green: 0.75, blue: 0.44, alpha: 1)
+            : UIColor(red: 0.61, green: 0.41, blue: 0.12, alpha: 1)
+    })
+
+    static let habitSurface = Color.primary.opacity(0.045)
+    static let accent = habitGreen
 }
 
 #Preview {

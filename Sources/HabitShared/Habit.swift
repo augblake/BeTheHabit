@@ -57,6 +57,16 @@ public struct HabitEntry: Codable, Equatable {
     }
 }
 
+public struct TrackingHistory: Codable, Equatable {
+    public var entries: [String: HabitEntry]
+    public var goal: Double?
+
+    public init(entries: [String: HabitEntry], goal: Double?) {
+        self.entries = entries
+        self.goal = goal
+    }
+}
+
 public struct Habit: Identifiable, Codable, Equatable {
     public var id: UUID
     public var name: String
@@ -67,6 +77,7 @@ public struct Habit: Identifiable, Codable, Equatable {
     public var notes: String?
     public var iconName: String?
     public var iconColorHex: String?
+    public var archivedTrackingHistory: [String: TrackingHistory]?
     public var timerStartedAt: Date?
     public var timerStartedFor: Date?
 
@@ -89,8 +100,22 @@ public struct Habit: Identifiable, Codable, Equatable {
         self.notes = notes
         self.iconName = iconName
         self.iconColorHex = iconColorHex
+        self.archivedTrackingHistory = nil
         self.timerStartedAt = nil
         self.timerStartedFor = nil
+    }
+
+    public mutating func changeTrackingMode(to newMode: TrackingMode) {
+        guard newMode != trackingMode else { return }
+        var history = archivedTrackingHistory ?? [:]
+        history[trackingMode.rawValue] = TrackingHistory(entries: entries, goal: goal)
+        let restored = history.removeValue(forKey: newMode.rawValue)
+        entries = restored?.entries ?? [:]
+        goal = restored?.goal
+        trackingMode = newMode
+        timerStartedAt = nil
+        timerStartedFor = nil
+        archivedTrackingHistory = history
     }
 
     public func entry(for date: Date) -> HabitEntry? {
@@ -105,15 +130,31 @@ public struct Habit: Identifiable, Codable, Equatable {
         var streak = 0
         var date = Calendar.current.startOfDay(for: today)
 
-        while isComplete(on: date) {
-            streak += 1
-            guard let previous = Calendar.current.date(byAdding: .day, value: -1, to: date) else {
-                break
+        while let current = entry(for: date) {
+            guard trackingMode != .yesNo || current.completed else { break }
+            let previous = Calendar.current.date(byAdding: .day, value: -1, to: date)
+            if trackingMode != .yesNo, let previous, let earlier = entry(for: previous) {
+                let movingInRightDirection = type == .build
+                    ? current.value >= earlier.value
+                    : current.value <= earlier.value
+                guard movingInRightDirection else { break }
             }
+            streak += 1
+            guard let previous else { break }
             date = previous
         }
 
         return streak
+    }
+
+    public func visibleStreak(today: Date = Date()) -> Int {
+        let current = currentStreak(today: today)
+        if current > 0 { return current }
+        // A recorded miss ends the streak immediately. Only an untracked day
+        // gets the grace period for yesterday's completed streak.
+        if entry(for: today) != nil { return 0 }
+        guard let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: today) else { return 0 }
+        return currentStreak(today: yesterday)
     }
 
     public static func dateKey(_ date: Date) -> String {
