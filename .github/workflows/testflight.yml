@@ -27,9 +27,19 @@ jobs:
       - name: Create App Store Connect API key
         run: |
           mkdir -p "$RUNNER_TEMP/private_keys"
-          cat > "$RUNNER_TEMP/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8" <<'KEY'
-          ${{ secrets.ASC_PRIVATE_KEY }}
-          KEY
+          ASC_PRIVATE_KEY="$ASC_PRIVATE_KEY" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          key = os.environ["ASC_PRIVATE_KEY"].replace("\\n", "\n").strip()
+          if key.startswith('"') and key.endswith('"'):
+              key = key[1:-1]
+          if not key.startswith("-----BEGIN PRIVATE KEY-----"):
+              raise SystemExit("ASC_PRIVATE_KEY is not a PEM private key")
+          Path(os.environ["RUNNER_TEMP"]).joinpath("private_keys", f"AuthKey_{os.environ['ASC_KEY_ID']}.p8").write_text(key + "\n")
+          PY
+        env:
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
 
       - name: Generate Xcode project
         run: xtool dev generate-xcode-project
