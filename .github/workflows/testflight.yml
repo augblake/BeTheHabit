@@ -1,0 +1,75 @@
+name: Build and upload TestFlight
+
+on:
+  workflow_dispatch:
+
+jobs:
+  testflight:
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install xtool
+        run: brew install xtool-org/tap/xtool
+
+      - name: Configure release identity
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("xtool.yml")
+          s = p.read_text()
+          s = s.replace("bundleID: com.example.HabitQuest", "bundleID: XTL-MXQT5L922T.com.example.HabitQuest")
+          s = s.replace("bundleID: com.example.HabitQuest.widget", "bundleID: XTL-MXQT5L922T.com.example.HabitQuest.widget")
+          p.write_text(s)
+          PY
+
+      - name: Create App Store Connect API key
+        run: |
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          cat > "$RUNNER_TEMP/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8" <<'KEY'
+          ${{ secrets.ASC_PRIVATE_KEY }}
+          KEY
+
+      - name: Generate Xcode project
+        run: xtool dev generate-xcode-project
+
+      - name: Archive app
+        run: |
+          xcodebuild archive \
+            -scheme HabitQuest \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/BeTheHabit.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8" \
+            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}"
+
+      - name: Export IPA
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>method</key><string>app-store</string>
+          <key>signingStyle</key><string>automatic</string>
+          <key>destination</key><string>export</string>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/BeTheHabit.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8" \
+            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}"
+
+      - name: Upload to TestFlight
+        run: |
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$RUNNER_TEMP/export/HabitQuest.ipa" \
+            --apiKey "${{ secrets.ASC_KEY_ID }}" \
+            --apiIssuer "${{ secrets.ASC_ISSUER_ID }}"
