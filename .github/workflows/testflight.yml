@@ -46,7 +46,7 @@ jobs:
       - name: Archive app
         run: |
           xcodebuild archive \
-            -workspace xtool/BeTheHabit.xcworkspace -scheme BeTheHabit-App \
+            -workspace xtool/BeTheHabit.xcworkspace -scheme BeTheHabit-App DEVELOPMENT_TEAM=MXQT5L922T CODE_SIGN_STYLE=Automatic \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/BeTheHabit.xcarchive" \
