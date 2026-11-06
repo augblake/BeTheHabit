@@ -46,7 +46,7 @@ jobs:
       - name: Archive app
         run: |
           xcodebuild archive \
-            -scheme HabitQuest \
+            -scheme BeTheHabit \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/BeTheHabit.xcarchive" \
@@ -79,6 +79,6 @@ jobs:
         run: |
           xcrun altool --upload-app \
             --type ios \
-            --file "$RUNNER_TEMP/export/HabitQuest.ipa" \
+            --file "$RUNNER_TEMP/export/BeTheHabit.ipa" \
             --apiKey "${{ secrets.ASC_KEY_ID }}" \
             --apiIssuer "${{ secrets.ASC_ISSUER_ID }}"
