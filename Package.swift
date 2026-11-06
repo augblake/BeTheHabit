@@ -1,15 +1,15 @@
 // swift-tools-version: 6.0
 import PackageDescription
 let package = Package(
-    name: "HabitQuest",
+    name: "BeTheHabit",
     platforms: [.iOS(.v16), .macOS(.v14)],
     products: [
-        .library(name: "HabitQuest", targets: ["HabitQuest"]),
+        .library(name: "BeTheHabit", targets: ["BeTheHabit"]),
         .library(name: "BeHabitWidget", targets: ["BeHabitWidget"])
     ],
     targets: [
         .target(name: "HabitShared"),
-        .target(name: "HabitQuest", dependencies: ["HabitShared"]),
+        .target(name: "BeTheHabit", dependencies: ["HabitShared"]),
         .target(name: "BeHabitWidget", dependencies: ["HabitShared"]),
         .testTarget(name: "HabitSharedTests", dependencies: ["HabitShared"])
     ]

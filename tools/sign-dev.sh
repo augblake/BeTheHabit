@@ -52,9 +52,9 @@ app=$stage/Payload/$(basename "$app")
 widget=$app/PlugIns/BeHabitWidget.appex
 if [ -d "$widget" ]; then
   metadata_tool=${APPINTENTS_META_TOOL:-$(realpath "$build_root/../../../omarchy-apple-dev/tools/appintentsmeta.py")}
-  sdk=$(find "$HOME/.cache/xtool" -maxdepth 1 -type d -name 'darwin-iPhoneOS*.xtoolsdk' | sort -V | tail -n 1)
+  sdk="$HOME/.config/swiftpm/swift-sdks/darwin.artifactbundle"
   [ -f "$metadata_tool" ] && [ -n "$sdk" ] || { echo "App Intents metadata tool or iOS SDK missing" >&2; exit 1; }
-  const_values=$build_root/.build/out/Intermediates.noindex/HabitQuest.build/Debug-iphoneos/BeHabitWidget-t.build/Objects-normal/arm64/BeHabitWidget.swiftconstvalues
+  const_values=$build_root/.build/out/Intermediates.noindex/BeTheHabit.build/Debug-iphoneos/BeHabitWidget-t.build/Objects-normal/arm64/BeHabitWidget.swiftconstvalues
   [ -f "$const_values" ] || { echo "widget App Intents constants missing: $const_values" >&2; exit 1; }
   widget_id=$(python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1],"rb"))["CFBundleIdentifier"])' "$widget/Info.plist")
   python3 "$metadata_tool" --module-name BeHabitWidget --bundle-identifier "$widget_id" \

@@ -1,8 +1,9 @@
+import Combine
 import HabitShared
 import SwiftUI
 
 @main
-struct HabitQuestApp: App {
+struct BeTheHabitApp: App {
     @UIApplicationDelegateAdaptor(SharingAppDelegate.self) private var appDelegate
     @StateObject private var sharing = CloudHabitSharing.shared
     @StateObject private var backup = CloudHabitBackup.shared
@@ -32,6 +33,9 @@ struct HabitQuestApp: App {
                             backup.begin(with: store)
                             Task { await sharing.refresh(store.habits) }
                         }
+                    }
+                    .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+                        if scenePhase == .active { store.expireAlternatingTimers() }
                     }
                     .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
                         backup.changed()

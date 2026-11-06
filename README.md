@@ -18,14 +18,13 @@ streaks count consecutive successful check-ins.
 - Personal notes excluded from shared snapshots.
 
 The app requires iOS 16 or later. The configurable widget requires iOS 17 or later
-and supports interactive check-ins and timers. The internal Swift package and app product retain
-`HabitQuest`, and the widget product retains `BeHabitWidget`.
+and supports interactive check-ins and timers. The Swift package and app product are named `BeTheHabit`; the widget product remains `BeHabitWidget`.
 
 ## Source layout
 
 | Directory | Purpose |
 | --- | --- |
-| `Sources/HabitQuest` | SwiftUI app, private CloudKit backup and friend sharing |
+| `Sources/BeTheHabit` | SwiftUI app, private CloudKit backup and friend sharing |
 | `Sources/HabitShared` | Habit models, local storage and sharing snapshot |
 | `Sources/BeHabitWidget` | WidgetKit UI, habit picker and interactive intents |
 | `Tests/HabitSharedTests` | Storage, migration, widget coordination and privacy tests |
@@ -86,7 +85,7 @@ For your own installable build, configure your own signing and identifiers:
 2. Set the same App Group in both entitlement files and
    `HabitRepository.appGroup` in `Sources/HabitShared/HabitRepository.swift`.
 3. Configure your own CloudKit container in `BeHabit.CloudKit.entitlements` and
-   `CloudHabitSharing.containerIdentifier` in `Sources/HabitQuest/CloudHabitSharing.swift`.
+   `CloudHabitSharing.containerIdentifier` in `Sources/BeTheHabit/CloudHabitSharing.swift`.
 4. Register capabilities and obtain matching profiles for your own Apple team.
 5. For App Store/TestFlight, use distribution signing, Production CloudKit,
    the deployed production schema, matching app/widget versions, the privacy

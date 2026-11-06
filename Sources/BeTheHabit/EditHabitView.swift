@@ -10,11 +10,17 @@ struct EditHabitView: View {
     @State private var name: String
     @State private var trackingMode: TrackingMode
     @State private var goalText: String
+    @State private var tracksBothSides: Bool
+    @State private var oppositeName: String
+    @State private var oppositeIconName: String
     @State private var iconName: String
 
     init(habit: Habit, onSave: @escaping () -> Void) {
         self.habit = habit
         self.onSave = onSave
+        _tracksBothSides = State(initialValue: habit.tracksBothSides)
+        _oppositeIconName = State(initialValue: habit.oppositeTimerIconName ?? habit.iconName ?? "timer")
+        _oppositeName = State(initialValue: habit.oppositeName)
         _name = State(initialValue: habit.name)
         _trackingMode = State(initialValue: habit.trackingMode)
         _goalText = State(initialValue: habit.goal.map(Self.formatGoal) ?? "")
@@ -32,7 +38,7 @@ struct EditHabitView: View {
                 NavigationLink {
                     HabitIconPickerView(selectedIcon: $iconName)
                 } label: {
-                    Label("Icon", systemImage: iconName)
+                    Label { Text("Icon") } icon: { HabitSymbol(iconName) }
                         .foregroundStyle(.primary)
                 }
 
@@ -50,6 +56,21 @@ struct EditHabitView: View {
                         text: $goalText
                     )
                     .keyboardType(.decimalPad)
+                }
+                if trackingMode == .timer {
+                    Toggle("Track both sides", isOn: $tracksBothSides)
+                    if tracksBothSides {
+                        TextField("Opposite side name", text: $oppositeName)
+                        NavigationLink {
+                            HabitIconPickerView(selectedIcon: $oppositeIconName)
+                        } label: {
+                            Label { Text("Opposite side icon") } icon: { HabitSymbol(oppositeIconName) }
+                                .foregroundStyle(.primary)
+                        }
+                        Text("Press Start to begin. Switch changes sides, and Stop in the app pauses both. The widget’s Stop button switches sides. Both stop at midnight.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Text("Each tracking type keeps its own history. Switching back restores its previous entries and target.")
                     .font(.footnote)
@@ -81,6 +102,7 @@ struct EditHabitView: View {
             iconName: iconName,
             iconColorHex: habit.iconColorHex ?? HabitIconPalette.defaultHex
         )
+        store.configureAlternatingTimer(habit, enabled: tracksBothSides && trackingMode == .timer, name: oppositeName, iconName: oppositeIconName)
         onSave()
         dismiss()
     }

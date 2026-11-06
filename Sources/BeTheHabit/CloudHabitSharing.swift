@@ -189,6 +189,8 @@ final class CloudHabitSharing: ObservableObject {
         guard !leavingIDs.contains(id) else { return }
         guard let data = record["snapshot"] as? Data else { return }
         let snapshot = try JSONDecoder().decode(SharedHabitSnapshot.self, from: data)
+        try HabitValidation.validate([snapshot.habit])
+        guard snapshot.habit.id.uuidString == record.recordID.recordName else { throw SharingError.invalidInvitation }
         let friend = FriendHabit(owner: zone.ownerName, zone: zone.zoneName, record: record.recordID.recordName, snapshot: snapshot)
         if let index = friends.firstIndex(where: { $0.id == friend.id }) { friends[index] = friend }
         else { friends.append(friend) }

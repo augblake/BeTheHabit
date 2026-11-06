@@ -135,11 +135,17 @@ private struct FriendHabitDetailsView: View {
                         Text("Goal: \(goal.formatted())\(habit.trackingMode == .timer ? " minutes" : "")")
                     }
                     if let started = habit.timerStartedAt {
-                        let saved = habit.entries[Habit.dateKey(habit.timerStartedFor ?? started)]?.value ?? 0
+                        let day = Habit.dateKey(habit.timerStartedFor ?? started)
+                        let saved = habit.runningOpposite ? (habit.oppositeTimerEntries?[day]?.value ?? 0) : (habit.entries[day]?.value ?? 0)
                         HStack {
-                            Text("Timer")
+                            Text(habit.activeTimerName)
                             Spacer()
-                            Text(started.addingTimeInterval(-saved), style: .timer).monospacedDigit()
+                            if let cutoff = habit.timerCutoff() {
+                                Text(timerInterval: started.addingTimeInterval(-saved)...cutoff,
+                                     pauseTime: cutoff, countsDown: false).monospacedDigit()
+                            } else {
+                                Text(started.addingTimeInterval(-saved), style: .timer).monospacedDigit()
+                            }
                         }
                     }
                 }

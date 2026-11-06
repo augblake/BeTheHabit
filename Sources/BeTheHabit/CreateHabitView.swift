@@ -10,6 +10,9 @@ struct CreateHabitView: View {
     @State private var trackingMode: TrackingMode = .yesNo
     @State private var goal = ""
     @State private var iconName: String?
+    @State private var tracksBothSides = false
+    @State private var oppositeName = ""
+    @State private var oppositeIconName = "timer"
 
     private var canCreate: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -34,7 +37,7 @@ struct CreateHabitView: View {
                         )
                     } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: iconName ?? defaultIcon)
+                            HabitSymbol(iconName ?? defaultIcon)
                                 .font(.system(size: 21, weight: .semibold))
                                 .foregroundStyle(.primary)
                                 .frame(width: 34)
@@ -105,6 +108,21 @@ struct CreateHabitView: View {
                         )
                         .keyboardType(.decimalPad)
                     }
+                    if trackingMode == .timer {
+                        Toggle("Track both sides", isOn: $tracksBothSides)
+                        if tracksBothSides {
+                            TextField("Opposite side name", text: $oppositeName)
+                            NavigationLink {
+                                HabitIconPickerView(selectedIcon: $oppositeIconName)
+                            } label: {
+                                Label { Text("Opposite side icon") } icon: { HabitSymbol(oppositeIconName) }
+                                    .foregroundStyle(.primary)
+                            }
+                            Text("Press Start to begin. Switch changes sides, and Stop in the app pauses both. The widget’s Stop button switches sides.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 } header: {
                     Text("Tracking")
                 }
@@ -153,7 +171,10 @@ struct CreateHabitView: View {
             trackingMode: trackingMode,
             goal: goalValue,
             iconName: iconName,
-            iconColorHex: nil
+            iconColorHex: nil,
+            tracksBothSides: tracksBothSides && trackingMode == .timer,
+            oppositeName: oppositeName,
+            oppositeIconName: oppositeIconName
         )
 
         dismiss()

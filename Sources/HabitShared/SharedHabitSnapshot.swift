@@ -1,6 +1,6 @@
 import Foundation
 
-/// The explicit sharing boundary: personal notes never leave this device.
+/// Friend snapshots exclude notes and archived modes; private backups are separate.
 public struct SharedHabitSnapshot: Codable, Equatable {
     public let ownerName: String
     public let updatedAt: Date

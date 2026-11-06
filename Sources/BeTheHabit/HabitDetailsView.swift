@@ -48,6 +48,7 @@ struct HabitDetailsView: View {
                     if hasNumericTarget {
                         targetCard
                     }
+                    if habit.tracksBothSides { alternatingTimerCard }
                     trendCard
                     historyCard
 
@@ -130,9 +131,73 @@ struct HabitDetailsView: View {
         .presentationDetents([.large])
     }
 
+    private var alternatingTimerCard: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Both sides", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.headline)
+                Text(selectedDate.formatted(.dateTime.month(.abbreviated).day().year()))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                sideTotal(habit.name, icon: habit.iconName ?? "timer", seconds: habit.timerSeconds(on: selectedDate, at: context.date), color: .habitGreen)
+                sideTotal(habit.oppositeName, icon: habit.oppositeTimerIconName ?? habit.iconName ?? "timer", seconds: habit.timerSeconds(on: selectedDate, opposite: true, at: context.date), color: .orange)
+                Chart {
+                    ForEach([false, true], id: \.self) { opposite in
+                        ForEach(comparisonDays, id: \.self) { day in
+                            let side = opposite ? "opposite" : "primary"
+                            let minutes = habit.timerSeconds(on: day, opposite: opposite, at: context.date) / 60
+                            AreaMark(
+                                x: .value("Day", day),
+                                yStart: .value("Minutes", 0.0),
+                                yEnd: .value("Minutes", minutes),
+                                series: .value("Side", side)
+                            )
+                            .foregroundStyle((opposite ? Color.orange : Color.habitGreen).opacity(0.12))
+                            .interpolationMethod(.linear)
+                            LineMark(
+                                x: .value("Day", day),
+                                y: .value("Minutes", minutes),
+                                series: .value("Side", side)
+                            )
+                            .foregroundStyle(by: .value("Side", side))
+                            .interpolationMethod(.linear)
+                            .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        }
+                    }
+                }
+                .chartForegroundStyleScale(["primary": Color.habitGreen, "opposite": Color.orange])
+                .chartLegend(.hidden)
+                .chartYAxisLabel("Minutes")
+                .frame(height: 180)
+                .accessibilityLabel("Daily time comparison: \(habit.name) and \(habit.oppositeName)")
+                Text("14 days ending on the selected history date. Green: \(habit.name). Orange: \(habit.oppositeName).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .background(cardBackground)
+        }
+    }
+
+    private var comparisonDays: [Date] {
+        (-13...0).compactMap { Calendar.current.date(byAdding: .day, value: $0, to: Calendar.current.startOfDay(for: selectedDate)) }
+    }
+
+    private func sideTotal(_ name: String, icon: String, seconds: TimeInterval, color: Color) -> some View {
+        let value = max(0, Int(seconds))
+        return HStack {
+            Label { Text(name) } icon: { HabitSymbol(icon) }
+            Spacer()
+            Text(String(format: "%02d:%02d:%02d", value / 3600, value / 60 % 60, value % 60))
+                .monospacedDigit()
+        }
+        .foregroundStyle(color)
+        .font(.subheadline)
+    }
+
     private var identityCard: some View {
         HStack(spacing: 14) {
-            Image(systemName: iconName)
+            HabitSymbol(iconName)
                 .font(.system(size: 30, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 60, height: 60)
@@ -595,10 +660,10 @@ struct HabitIconPickerView: View {
             : (HabitIconCatalog.categories.first(where: { $0.name == selectedCategory })?.symbols ?? [])
         var seen = Set<String>()
         let filtered = available.filter { symbol in
-            UIImage(systemName: symbol) != nil && seen.insert(symbol).inserted
+            (HabitIconGlyph.icons[symbol] != nil || UIImage(systemName: symbol) != nil) && seen.insert(symbol).inserted
         }
         guard !searchText.isEmpty else { return filtered }
-        return filtered.filter { $0.localizedCaseInsensitiveContains(searchText) }
+        return filtered.filter { HabitIconGlyph.matches($0, query: searchText.trimmingCharacters(in: .whitespacesAndNewlines)) }
     }
 
     var body: some View {
@@ -624,7 +689,7 @@ struct HabitIconPickerView: View {
                         } label: {
                             VStack(spacing: 6) {
                                 ZStack(alignment: .topTrailing) {
-                                    Image(systemName: symbol)
+                                    HabitSymbol(symbol)
                                         .font(.system(size: 23, weight: .medium))
                                         .foregroundStyle(.primary)
                                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -632,7 +697,7 @@ struct HabitIconPickerView: View {
                                 }
                                 .frame(height: 28)
 
-                                Text(symbol.replacingOccurrences(of: ".", with: " "))
+                                Text(HabitIconGlyph.title(for: symbol))
                                     .font(.system(size: 8))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
@@ -646,7 +711,7 @@ struct HabitIconPickerView: View {
                             )
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(symbol.replacingOccurrences(of: ".", with: " "))
+                        .accessibilityLabel(HabitIconGlyph.title(for: symbol))
                         .accessibilityAddTraits(selectedIcon == symbol ? .isSelected : [])
                     }
                 }

@@ -38,9 +38,23 @@ public struct HabitRepository: Sendable {
     private var file: URL { directory.appendingPathComponent("habits.json") }
     private func read() throws -> [Habit] {
         guard FileManager.default.fileExists(atPath: file.path) else { return [] }
-        return try JSONDecoder().decode([Habit].self, from: Data(contentsOf: file))
+        let habits = try JSONDecoder().decode([Habit].self, from: Data(contentsOf: file))
+        try HabitValidation.validate(habits)
+        return habits
     }
-    public func load() throws -> [Habit] { try locked { try read() } }
+    private func readSettlingExpiredTimers(now: Date) throws -> [Habit] {
+        var habits = try read()
+        var changed = false
+        for index in habits.indices {
+            if habits[index].expireAlternatingTimer(at: now) { changed = true }
+        }
+        if changed { try JSONEncoder().encode(habits).write(to: file, options: .atomic) }
+        return habits
+    }
+
+    public func load(now: Date = Date()) throws -> [Habit] {
+        try locked { try readSettlingExpiredTimers(now: now) }
+    }
 
     public func selectWidgetHabit(id: UUID) throws {
         try locked {
@@ -60,6 +74,7 @@ public struct HabitRepository: Sendable {
     /// Adds cloud-only habits while preserving local edits made during the download.
     public func mergeFromCloud(_ remote: [Habit], selectedWidgetID: UUID?) throws -> [Habit] {
         try locked {
+            try HabitValidation.validate(remote)
             var local = try read()
             var ids = Set(local.map(\.id))
             for habit in remote where ids.insert(habit.id).inserted { local.append(habit) }
@@ -74,9 +89,9 @@ public struct HabitRepository: Sendable {
         }
     }
 
-    public func widgetHabit() throws -> Habit? {
+    public func widgetHabit(now: Date = Date()) throws -> Habit? {
         try locked {
-            let habits = try read()
+            let habits = try readSettlingExpiredTimers(now: now)
             let setting = directory.appendingPathComponent("widget-habit.json")
             if FileManager.default.fileExists(atPath: setting.path),
                let id = try? JSONDecoder().decode(UUID.self, from: Data(contentsOf: setting)),
@@ -90,6 +105,7 @@ public struct HabitRepository: Sendable {
         try locked {
             guard !FileManager.default.fileExists(atPath: file.path) else { return }
             let habits = try legacyData.map { try JSONDecoder().decode([Habit].self, from: $0) } ?? []
+            try HabitValidation.validate(habits)
             try JSONEncoder().encode(habits).write(to: file, options: .atomic)
         }
     }
@@ -98,6 +114,7 @@ public struct HabitRepository: Sendable {
         try locked {
             var habits = try read()
             try action(&habits)
+            try HabitValidation.validate(habits)
             try JSONEncoder().encode(habits).write(to: file, options: .atomic)
             return habits
         }
@@ -105,7 +122,9 @@ public struct HabitRepository: Sendable {
 
     // Merge only fields edited by the app, preserving concurrent widget actions.
     public func save(_ updated: [Habit], baseline: [Habit]) throws -> [Habit] {
-        try update { current in
+        try HabitValidation.validate(updated)
+        try HabitValidation.validate(baseline)
+        return try update { current in
             let old = Dictionary(uniqueKeysWithValues: baseline.map { ($0.id, $0) })
             let desired = Set(updated.map(\.id))
             current.removeAll { old[$0.id] != nil && !desired.contains($0.id) }
@@ -139,8 +158,8 @@ public struct HabitRepository: Sendable {
                 let a = try object(before), b = try object(desiredHabit)
                 var merged = try object(current[index])
                 for key in Set(a.keys).union(b.keys) {
-                    if key == "entries" {
-                        if changedMode {
+                    if key == "entries" || key == "oppositeTimerEntries" {
+                        if changedMode && key == "entries" {
                             merged[key] = b[key] ?? [:]
                             continue
                         }
@@ -168,6 +187,30 @@ public struct HabitRepository: Sendable {
         }
     }
 
+    // Read and mutate the latest timer under the same app/widget storage lock.
+    // App actions must not merge elapsed time calculated from a stale snapshot.
+    public func performTimerAction(id: UUID, action: HabitTimerAction, on date: Date,
+                                   now: Date = Date()) throws -> [Habit] {
+        try update { habits in
+            guard let index = habits.firstIndex(where: { $0.id == id }),
+                  habits[index].trackingMode == .timer else { return }
+            switch action {
+            case .start:
+                habits[index].expireAlternatingTimer(at: now)
+                if habits[index].timerStartedAt == nil { habits[index].activateTimer(on: date, at: now) }
+            case .switchSide:
+                habits[index].expireAlternatingTimer(at: now)
+                if habits[index].timerIsActive(at: now) { habits[index].activateTimer(on: date, at: now) }
+            case .stop:
+                habits[index].finishTimer(at: now)
+            case .clearDay:
+                habits[index].clearTimerDay(on: date, at: now)
+            case let .configure(enabled, name, iconName):
+                habits[index].configureAlternatingTimer(enabled: enabled, name: name, iconName: iconName, at: now)
+            }
+        }
+    }
+
     public func activate(id: UUID, now: Date = Date()) throws {
         _ = try update { habits in
             guard let index = habits.firstIndex(where: { $0.id == id }) else { return }
@@ -178,16 +221,7 @@ public struct HabitRepository: Sendable {
                 let old = habit.entries[key]
                 habit.entries[key] = HabitEntry(value: old?.value ?? (habit.type == .remove ? 0 : 1), completed: !(old?.completed ?? false))
             case .timer:
-                if let start = habit.timerStartedAt {
-                    let key = Habit.dateKey(habit.timerStartedFor ?? now)
-                    let seconds = (habit.entries[key]?.value ?? 0) + max(0, now.timeIntervalSince(start))
-                    habit.entries[key] = HabitEntry(value: seconds, completed: seconds > 0 && (habit.goal.map { seconds >= $0 * 60 } ?? true))
-                    habit.timerStartedAt = nil
-                    habit.timerStartedFor = nil
-                } else {
-                    habit.timerStartedAt = now
-                    habit.timerStartedFor = Calendar.current.startOfDay(for: now)
-                }
+                habit.activateTimer(on: now, at: now)
             case .number: return
             }
             habits[index] = habit

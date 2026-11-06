@@ -6,6 +6,7 @@ import WidgetKit
 @MainActor
 final class HabitStore: ObservableObject {
     @Published private(set) var habits: [Habit] = []
+    @Published private(set) var storageError: String?
 
     private let storageKey = HabitRepository.storageKey
     private var baseline: [Habit] = []
@@ -21,9 +22,13 @@ final class HabitStore: ObservableObject {
         trackingMode: TrackingMode,
         goal: Double?,
         iconName: String? = nil,
-        iconColorHex: String? = nil
+        iconColorHex: String? = nil,
+        tracksBothSides: Bool = false,
+        oppositeName: String = "Other time",
+        oppositeIconName: String? = nil
     ) {
-        let habit = Habit(
+        guard HabitValidation.isSafeGoal(goal, mode: trackingMode) else { return }
+        var habit = Habit(
             name: name,
             type: type,
             trackingMode: trackingMode,
@@ -32,6 +37,9 @@ final class HabitStore: ObservableObject {
             iconColorHex: iconColorHex
         )
 
+        if tracksBothSides {
+            habit.configureAlternatingTimer(enabled: true, name: oppositeName, iconName: oppositeIconName)
+        }
         habits.append(habit)
         save()
     }
@@ -123,6 +131,7 @@ final class HabitStore: ObservableObject {
             return
         }
 
+        guard HabitValidation.isSafeGoal(goal, mode: habits[index].trackingMode) else { return }
         habits[index].notes = notes
         habits[index].iconName = iconName
         habits[index].iconColorHex = iconColorHex
@@ -154,25 +163,10 @@ final class HabitStore: ObservableObject {
     ) {
         guard let index = habits.firstIndex(where: { $0.id == habit.id }) else { return }
         let cleanedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanedName.isEmpty else { return }
+        guard !cleanedName.isEmpty, HabitValidation.isSafeGoal(goal, mode: trackingMode) else { return }
 
-        if trackingMode != habits[index].trackingMode,
-           let startedAt = habits[index].timerStartedAt {
-            let date = habits[index].timerStartedFor ?? Date()
-            let key = Habit.dateKey(date)
-            let seconds = (habits[index].entries[key]?.value ?? 0)
-                + max(0, Date().timeIntervalSince(startedAt))
-            habits[index].entries[key] = HabitEntry(
-                value: seconds,
-                completed: completionStatus(
-                    type: habits[index].type,
-                    mode: .timer,
-                    value: seconds,
-                    goal: habits[index].goal
-                )
-            )
-            habits[index].timerStartedAt = nil
-            habits[index].timerStartedFor = nil
+        if trackingMode != habits[index].trackingMode {
+            habits[index].finishTimer()
         }
 
         habits[index].changeTrackingMode(to: trackingMode)
@@ -218,6 +212,7 @@ final class HabitStore: ObservableObject {
     }
 
     func setNumber(_ habit: Habit, value: Double, on date: Date) {
+        guard HabitValidation.isSafeNumber(value) else { return }
         guard let index = habits.firstIndex(where: { $0.id == habit.id }) else {
             return
         }
@@ -237,44 +232,53 @@ final class HabitStore: ObservableObject {
         save()
     }
 
-    func startTimer(_ habit: Habit, on date: Date) {
-        guard let index = habits.firstIndex(where: { $0.id == habit.id }),
-              habits[index].trackingMode == .timer,
-              habits[index].timerStartedAt == nil else {
-            return
-        }
-
-        habits[index].timerStartedAt = Date()
-        habits[index].timerStartedFor = Calendar.current.startOfDay(for: date)
-        save()
+    private func performTimerAction(_ habit: Habit, action: HabitTimerAction, on date: Date) {
+        do {
+            if let repository {
+                // Commit any unsaved UI edits first rather than silently losing them.
+                if storageError != nil { save() }
+                guard storageError == nil else { return }
+                habits = try repository.performTimerAction(id: habit.id, action: action, on: date)
+                baseline = habits
+                WidgetCenter.shared.reloadAllTimelines()
+                CloudHabitBackup.shared.changed()
+            } else {
+                guard let index = habits.firstIndex(where: { $0.id == habit.id }), habits[index].trackingMode == .timer else { return }
+                switch action {
+                case .start:
+                    habits[index].expireAlternatingTimer()
+                    if habits[index].timerStartedAt == nil { habits[index].activateTimer(on: date) }
+                case .switchSide:
+                    habits[index].expireAlternatingTimer()
+                    if habits[index].timerIsActive() { habits[index].activateTimer(on: date) }
+                case .stop: habits[index].finishTimer()
+                case .clearDay: habits[index].clearTimerDay(on: date)
+                case let .configure(enabled, name, iconName):
+                    habits[index].configureAlternatingTimer(enabled: enabled, name: name, iconName: iconName)
+                }
+                save()
+            }
+        } catch { storageError = "Timer changes could not be saved. Please try again." }
     }
 
-    func stopTimer(_ habit: Habit, on fallbackDate: Date) {
-        guard let index = habits.firstIndex(where: { $0.id == habit.id }),
-              let startedAt = habits[index].timerStartedAt else {
-            return
-        }
+    func configureAlternatingTimer(_ habit: Habit, enabled: Bool, name: String, iconName: String? = nil) {
+        performTimerAction(habit, action: .configure(enabled: enabled, name: name, iconName: iconName), on: Date())
+    }
 
-        let date = habits[index].timerStartedFor ?? fallbackDate
-        let key = Habit.dateKey(date)
-        let previousValue = habits[index].entries[key]?.value ?? 0
-        let elapsed = max(0, Date().timeIntervalSince(startedAt))
-        let totalTime = previousValue + elapsed
-        habits[index].entries[key] = HabitEntry(
-            value: totalTime,
-            completed: completionStatus(
-                type: habits[index].type,
-                mode: .timer,
-                value: totalTime,
-                goal: habits[index].goal
-            )
-        )
-        habits[index].timerStartedAt = nil
-        habits[index].timerStartedFor = nil
-        save()
+    func startTimer(_ habit: Habit, on date: Date) {
+        performTimerAction(habit, action: .start, on: date)
+    }
+
+    func switchTimer(_ habit: Habit, on date: Date) {
+        performTimerAction(habit, action: .switchSide, on: date)
+    }
+
+    func stopTimer(_ habit: Habit, on date: Date) {
+        performTimerAction(habit, action: .stop, on: date)
     }
 
     func setTimerTime(_ habit: Habit, minutes: Double, on date: Date) {
+        guard minutes >= 0, HabitValidation.isSafeNumber(minutes * 60) else { return }
         guard let index = habits.firstIndex(where: { $0.id == habit.id }),
               habits[index].trackingMode == .timer else {
             return
@@ -300,17 +304,11 @@ final class HabitStore: ObservableObject {
     }
 
     func clearTimerTime(_ habit: Habit, on date: Date) {
-        guard let index = habits.firstIndex(where: { $0.id == habit.id }),
-              habits[index].trackingMode == .timer else {
-            return
-        }
-
-        habits[index].entries.removeValue(forKey: Habit.dateKey(date))
-        save()
+        performTimerAction(habit, action: .clearDay, on: date)
     }
 
     func timerIsRunning(_ habit: Habit) -> Bool {
-        habits.first(where: { $0.id == habit.id })?.timerStartedAt != nil
+        habits.first(where: { $0.id == habit.id })?.timerIsActive() ?? false
     }
 
     func timerDate(_ habit: Habit, fallback: Date) -> Date {
@@ -322,16 +320,7 @@ final class HabitStore: ObservableObject {
             return 0
         }
 
-        let key = Habit.dateKey(date)
-        let savedElapsed = currentHabit.entries[key]?.value ?? 0
-
-        guard let startedAt = currentHabit.timerStartedAt,
-              let startedFor = currentHabit.timerStartedFor,
-              Habit.dateKey(startedFor) == key else {
-            return savedElapsed
-        }
-
-        return savedElapsed + max(0, now.timeIntervalSince(startedAt))
+        return currentHabit.timerSeconds(on: date, at: now)
     }
 
     func entry(for habit: Habit, on date: Date) -> HabitEntry? {
@@ -346,13 +335,27 @@ final class HabitStore: ObservableObject {
                 UserDefaults.standard.set(try JSONEncoder().encode(habits), forKey: storageKey)
             }
             baseline = habits
+            storageError = nil
             WidgetCenter.shared.reloadAllTimelines()
             CloudHabitBackup.shared.changed()
-        } catch { print("BeHabit save error:", error) }
+        } catch { storageError = "Changes could not be saved. Your previous saved data is unchanged. Please try again." }
+    }
+
+    func expireAlternatingTimers(at now: Date = Date()) {
+        guard habits.contains(where: { $0.timerCutoff().map { now >= $0 } ?? false }) else { return }
+        // Refresh first so a newer widget switch cannot be overwritten by stale app state.
+        if repository != nil { refresh() }
+        var changed = false
+        for index in habits.indices {
+            if habits[index].expireAlternatingTimer(at: now) { changed = true }
+        }
+        if changed { save() }
+        else { WidgetCenter.shared.reloadAllTimelines() }
     }
 
     func refresh() {
-        guard let repository else { return }
+        // Preserve edits after a failed save instead of replacing them on the next refresh.
+        guard storageError == nil, let repository else { return }
         do {
             let loaded = try repository.load()
             if loaded != habits {
@@ -393,11 +396,16 @@ final class HabitStore: ObservableObject {
         } catch {
             // Keep the installed app usable while signing is being configured.
             if let data = UserDefaults.standard.data(forKey: storageKey) {
-                do { habits = try JSONDecoder().decode([Habit].self, from: data) }
+                do {
+                    let legacy = try JSONDecoder().decode([Habit].self, from: data)
+                    try HabitValidation.validate(legacy)
+                    habits = legacy
+                }
                 catch { print("BeHabit legacy load error:", error) }
             }
             baseline = habits
-            print("BeHabit shared storage unavailable:", error)
+            storageError = "Shared habit storage is unavailable. Existing files have been preserved."
+            print("BeTheHabit shared storage unavailable:", error)
         }
     }
 }

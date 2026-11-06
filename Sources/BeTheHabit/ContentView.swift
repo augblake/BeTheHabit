@@ -30,7 +30,6 @@ struct ContentView: View {
     @State private var dragStartIndex = 0
     @State private var dragTranslation: CGFloat = 0
     @State private var suppressHabitTapUntil = Date.distantPast
-    @GestureState private var reorderGestureActive = false
     @AppStorage("habitquest.lightAppearance") private var lightAppearance = false
     @AppStorage("habitquest.introductionSeen") private var introductionSeen = false
     @AppStorage("habitquest.momentumDays") private var momentumDaysData = Data()
@@ -74,10 +73,13 @@ struct ContentView: View {
                         habitActionBar(for: focusedHabit)
                     }
 
-                    ScrollView {
+                    ScrollView(.vertical, showsIndicators: false) {
                         VStack(alignment: .leading, spacing: 0) {
                             if sharing.message != nil {
                                 SharingErrorView().padding()
+                            }
+                            if let error = store.storageError {
+                                Text(error).font(.caption).foregroundStyle(.red).padding()
                             }
                             header
                             calendarGrid
@@ -177,6 +179,7 @@ struct ContentView: View {
                 today = Date()
                 recordMomentumUse()
             }
+            .onChange(of: store.habits) { _ in recordMomentumUse() }
             .onOpenURL(perform: openWidgetHabit)
         }
         .overlay {
@@ -305,7 +308,7 @@ struct ContentView: View {
     private func habitActionBar(for habit: Habit) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                Image(systemName: habit.iconName ?? HabitIconCatalog.defaultSymbol(for: habit))
+                HabitSymbol(habit.iconName ?? HabitIconCatalog.defaultSymbol(for: habit))
                     .foregroundStyle(Color.accent)
                 Text(habit.name)
                     .font(.system(size: 16, weight: .semibold))
@@ -374,7 +377,7 @@ struct ContentView: View {
     }
 
     private var momentumDays: Int {
-        max(1, Set((try? JSONDecoder().decode([String].self, from: momentumDaysData)) ?? []).count)
+        HabitMomentum.currentStreak(habits: store.habits, at: Date())
     }
 
     private var momentumTitleSize: CGFloat {
@@ -393,20 +396,9 @@ struct ContentView: View {
     }
 
     private func recordMomentumUse() {
-        let todayKey = Habit.dateKey(Date())
-        var days = Set((try? JSONDecoder().decode([String].self, from: momentumDaysData)) ?? [])
-
-        if !momentumHistorySeeded {
-            for habit in store.habits {
-                days.formUnion(habit.entries.keys.filter { $0 <= todayKey })
-                for history in habit.archivedTrackingHistory?.values ?? Dictionary<String, TrackingHistory>().values {
-                    days.formUnion(history.entries.keys.filter { $0 <= todayKey })
-                }
-            }
-            momentumHistorySeeded = true
-        }
-
-        days.insert(todayKey)
+        let days = HabitMomentum.recordedDays(habits: store.habits, at: Date())
+        // Replace old app-open counters with actual records; keep backup compatibility.
+        momentumHistorySeeded = true
         if let encoded = try? JSONEncoder().encode(days.sorted()), encoded != momentumDaysData {
             momentumDaysData = encoded
         }
@@ -537,7 +529,7 @@ struct ContentView: View {
                         .transaction { transaction in
                             if draggingHabitID == habit.id { transaction.animation = nil }
                         }
-                        .simultaneousGesture(reorderGesture(habit))
+                        .background(reorderTouchSurface(habit))
                         .accessibilityAction(named: "Habit Actions") { focusedHabitID = habit.id }
                         .accessibilityAction(named: "Move Up") { store.moveHabit(habit, by: -1) }
                         .accessibilityAction(named: "Move Down") { store.moveHabit(habit, by: 1) }
@@ -545,9 +537,6 @@ struct ContentView: View {
                 }
                 .coordinateSpace(name: "habitRows")
                 .animation(.spring(response: 0.25, dampingFraction: 0.9), value: store.habits.map(\.id))
-                .onChange(of: reorderGestureActive) { active in
-                    if !active { finishReorder() }
-                }
             }
         }
         .padding(.horizontal, 12)
@@ -560,33 +549,21 @@ struct ContentView: View {
         return dragTranslation - CGFloat(index - dragStartIndex) * 66
     }
 
-    private func reorderGesture(_ habit: Habit) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.35)
-            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("habitRows")))
-            .updating($reorderGestureActive) { value, active, _ in
-                switch value {
-                case .first: active = false
-                case .second(let pressed, _): active = pressed
+    private func reorderTouchSurface(_ habit: Habit) -> some View {
+        HabitRowReorderTouchSurface(
+            enabled: !isSelectingHabits,
+            onBegin: { beginReorder(habit) },
+            onMove: { translation in
+                guard draggingHabitID == habit.id else { return }
+                dragTranslation = translation
+                let destination = min(max(dragStartIndex + Int((translation / 66).rounded()), 0), store.habits.count - 1)
+                if let index = store.habits.firstIndex(where: { $0.id == habit.id }), index != destination {
+                    store.moveHabit(id: habit.id, to: store.habits[destination].id)
+                    UISelectionFeedbackGenerator().selectionChanged()
                 }
-            }
-            .onChanged { value in
-                switch value {
-                case .first:
-                    break
-                case .second(true, let drag):
-                    guard !isSelectingHabits else { return }
-                    beginReorder(habit)
-                    guard let drag, draggingHabitID == habit.id else { return }
-                    dragTranslation = drag.translation.height
-                    let destination = min(max(dragStartIndex + Int((dragTranslation / 66).rounded()), 0), store.habits.count - 1)
-                    if let index = store.habits.firstIndex(where: { $0.id == habit.id }), index != destination {
-                        store.moveHabit(id: habit.id, to: store.habits[destination].id)
-                        UISelectionFeedbackGenerator().selectionChanged()
-                    }
-                default: break
-                }
-            }
-            .onEnded { _ in finishReorder() }
+            },
+            onFinish: { finishReorder() }
+        )
     }
 
     private func beginReorder(_ habit: Habit) {
@@ -656,6 +633,7 @@ struct ContentView: View {
         let entry = store.entry(for: habit, on: date)
         let isRunningOnDate = habit.trackingMode == .timer
             && store.timerIsRunning(habit)
+            && !(store.habits.first(where: { $0.id == habit.id })?.runningOpposite ?? false)
             && Calendar.current.isDate(store.timerDate(habit, fallback: date), inSameDayAs: date)
 
         return Button {
@@ -846,19 +824,33 @@ private struct StopwatchView: View {
         _sessionDate = State(initialValue: selectedDate)
     }
 
+    private var currentHabit: Habit {
+        store.habits.first(where: { $0.id == habit.id }) ?? habit
+    }
+
     private var isRunning: Bool {
         store.timerIsRunning(habit)
     }
 
+    private var canDeleteRecordedTime: Bool {
+        let key = Habit.dateKey(sessionDate)
+        if currentHabit.entries[key] != nil { return true }
+        guard currentHabit.tracksBothSides else { return false }
+        if currentHabit.oppositeTimerEntries?[key] != nil { return true }
+        return currentHabit.timerStartedAt != nil
+            && currentHabit.timerStartedFor.map { Habit.dateKey($0) == key } == true
+    }
+
     var body: some View {
         NavigationStack {
+            ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 22) {
-                Image(systemName: "stopwatch.fill")
+                HabitSymbol(currentHabit.tracksBothSides ? currentHabit.activeTimerIconName : "stopwatch.fill")
                     .font(.system(size: 34))
                     .foregroundStyle(Color.accent)
                     .padding(.top, 20)
 
-                Text(habit.name)
+                Text(currentHabit.activeTimerName)
                     .font(.system(size: 21, weight: .semibold))
                     .foregroundStyle(.primary)
 
@@ -867,25 +859,40 @@ private struct StopwatchView: View {
                     .foregroundStyle(.secondary)
 
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(Self.formatDuration(store.timerElapsed(
-                        habit,
-                        on: sessionDate,
-                        at: context.date
-                    )))
+                    Text(Self.formatDuration(currentHabit.timerSeconds(on: sessionDate, opposite: currentHabit.runningOpposite, at: context.date)))
                     .font(.system(size: 48, weight: .light, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(currentHabit.runningOpposite ? Color.orange : Color.primary)
                     .contentTransition(.numericText())
+                }
+
+                if currentHabit.tracksBothSides {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        VStack(spacing: 5) {
+                            Text("\(currentHabit.name): \(Self.formatDuration(currentHabit.timerSeconds(on: sessionDate, at: context.date)))")
+                                .foregroundStyle(Color.habitGreen)
+                            Text("\(currentHabit.oppositeName): \(Self.formatDuration(currentHabit.timerSeconds(on: sessionDate, opposite: true, at: context.date)))")
+                                .foregroundStyle(Color.orange)
+                        }
+                        .font(.system(size: 14).monospacedDigit())
+                    }
                 }
 
                 Button {
                     if isRunning {
-                        store.stopTimer(habit, on: sessionDate)
+                        if currentHabit.tracksBothSides {
+                            store.switchTimer(habit, on: sessionDate)
+                        } else {
+                            store.stopTimer(habit, on: sessionDate)
+                        }
                     } else {
+                        if currentHabit.tracksBothSides {
+                            sessionDate = Calendar.current.startOfDay(for: Date())
+                        }
                         store.startTimer(habit, on: sessionDate)
                     }
                 } label: {
-                    Label(isRunning ? "Stop" : "Start", systemImage: isRunning ? "stop.fill" : "play.fill")
+                    Label(currentHabit.tracksBothSides && isRunning ? "Switch to \(currentHabit.runningOpposite ? currentHabit.name : currentHabit.oppositeName)" : (isRunning ? "Stop" : "Start"), systemImage: currentHabit.tracksBothSides && isRunning ? "arrow.triangle.2.circlepath" : (isRunning ? "stop.fill" : "play.fill"))
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(isRunning ? Color.primary : Color.background)
                         .frame(maxWidth: .infinity)
@@ -895,10 +902,27 @@ private struct StopwatchView: View {
                 .buttonStyle(.plain)
                 .padding(.horizontal, 28)
 
-                Text(isRunning ? "Time is being recorded." : "Elapsed time is saved when you stop.")
+                if currentHabit.tracksBothSides && isRunning {
+                    Button {
+                        store.stopTimer(habit, on: sessionDate)
+                    } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.secondary)
+                    .accessibilityLabel("Stop both timer sides")
+                }
+
+                Text(currentHabit.tracksBothSides ? "Start begins tracking. Switch changes sides. Stop pauses both. Both stop at midnight." : (isRunning ? "Time is being recorded." : "Elapsed time is saved when you stop."))
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
 
+                if currentHabit.tracksBothSides {
+                    Text("Edit time applies to \(currentHabit.name). Delete time clears both sides for this day and stops its running timer.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if isEditingSavedTime {
                     VStack(spacing: 9) {
                         HStack(spacing: 10) {
@@ -940,14 +964,15 @@ private struct StopwatchView: View {
                         } label: {
                             Label("Delete time", systemImage: "trash")
                         }
-                        .disabled(store.entry(for: habit, on: sessionDate) == nil)
+                        .disabled(!canDeleteRecordedTime)
                     }
                     .font(.system(size: 14, weight: .medium))
                 }
 
                 Spacer(minLength: 10)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
+            }
             .background(Color.background.ignoresSafeArea())
             .navigationTitle("Stopwatch")
             .navigationBarTitleDisplayMode(.inline)
@@ -957,7 +982,7 @@ private struct StopwatchView: View {
                 }
             }
             .confirmationDialog(
-                "Delete the saved time for this day?",
+                currentHabit.tracksBothSides ? "Delete both sides for this day and stop its timer?" : "Delete the saved time for this day?",
                 isPresented: $confirmingClear,
                 titleVisibility: .visible
             ) {
@@ -966,12 +991,18 @@ private struct StopwatchView: View {
                 }
             }
             .onAppear {
+                store.expireAlternatingTimers()
                 if isRunning {
                     sessionDate = store.timerDate(habit, fallback: selectedDate)
                 }
             }
+            .onChange(of: currentHabit.timerStartedAt) { started in
+                if currentHabit.tracksBothSides, started == nil {
+                    sessionDate = Calendar.current.startOfDay(for: Date())
+                }
+            }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents(currentHabit.tracksBothSides ? [.large] : [.medium, .large])
     }
 
     private static func formatDuration(_ duration: TimeInterval) -> String {
@@ -1002,4 +1033,125 @@ extension Color {
 #Preview {
     ContentView()
         .environmentObject(HabitStore())
+}
+
+// Observe touches on the enclosing scroll view without covering row buttons.
+// A moving finger fails the long press, allowing the scroll view to pan.
+// A stationary hold begins the same reorder behavior as before.
+@MainActor
+private struct HabitRowReorderTouchSurface: UIViewRepresentable {
+    var enabled: Bool
+    var onBegin: () -> Void
+    var onMove: (CGFloat) -> Void
+    var onFinish: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> RowAnchorView {
+        let view = RowAnchorView()
+        view.isUserInteractionEnabled = false
+        view.coordinator = context.coordinator
+        context.coordinator.anchor = view
+        return view
+    }
+
+    func updateUIView(_ view: RowAnchorView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.installIfNeeded()
+    }
+
+    static func dismantleUIView(_ view: RowAnchorView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class RowAnchorView: UIView {
+        weak var coordinator: Coordinator?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            coordinator?.installIfNeeded()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            coordinator?.installIfNeeded()
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: HabitRowReorderTouchSurface
+        weak var anchor: RowAnchorView?
+        weak var scrollView: UIScrollView?
+        private var recognizer: UILongPressGestureRecognizer?
+        private var startY: CGFloat = 0
+        private var isReordering = false
+
+        init(_ parent: HabitRowReorderTouchSurface) { self.parent = parent }
+
+        func installIfNeeded() {
+            guard let anchor, anchor.window != nil else { return }
+            var ancestor = anchor.superview
+            while let view = ancestor {
+                if let scroll = view as? UIScrollView {
+                    guard scrollView !== scroll else { return }
+                    detach()
+                    scrollView = scroll
+                    let press = UILongPressGestureRecognizer(target: self, action: #selector(handlePress(_:)))
+                    press.minimumPressDuration = 0.35
+                    press.allowableMovement = 10
+                    press.cancelsTouchesInView = true
+                    press.delegate = self
+                    scroll.addGestureRecognizer(press)
+                    recognizer = press
+                    return
+                }
+                ancestor = view.superview
+            }
+        }
+
+        func detach() {
+            if let recognizer { recognizer.view?.removeGestureRecognizer(recognizer) }
+            recognizer = nil
+            scrollView = nil
+            if isReordering {
+                isReordering = false
+                parent.onFinish()
+            }
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard parent.enabled, let anchor, let scrollView,
+                  !scrollView.isDragging, !scrollView.isDecelerating else { return false }
+            let point = anchor.convert(touch.location(in: scrollView), from: scrollView)
+            return anchor.bounds.contains(point)
+        }
+
+        // The scroll pan waits only until a swipe has moved beyond the hold's
+        // allowable distance. Dependencies are evaluated per touch sequence.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let scrollView else { return false }
+            return otherGestureRecognizer === scrollView.panGestureRecognizer
+        }
+
+        @objc private func handlePress(_ press: UILongPressGestureRecognizer) {
+            guard let scrollView else { return }
+            switch press.state {
+            case .began:
+                guard parent.enabled else { return }
+                startY = press.location(in: scrollView).y
+                isReordering = true
+                parent.onBegin()
+            case .changed:
+                if isReordering { parent.onMove(press.location(in: scrollView).y - startY) }
+            case .ended, .cancelled, .failed:
+                if isReordering {
+                    isReordering = false
+                    parent.onFinish()
+                }
+            default:
+                break
+            }
+        }
+    }
 }

@@ -11,6 +11,25 @@ struct HabitIconCategory: Identifiable {
 
 enum HabitIconCatalog {
     static let categories: [HabitIconCategory] = [
+        HabitIconCategory(name: "Addictions & Temptations", symbols: [
+            "custom:smoking", "custom:vaping", "custom:drugs", "custom:needle", "custom:cannabis",
+            "custom:alcohol", "custom:beer", "custom:gambling", "custom:dice", "custom:chains",
+            "custom:skull", "custom:poison", "custom:devil", "custom:anger", "custom:swearing",
+            "custom:laziness", "custom:lust", "custom:money", "custom:junkfood", "custom:sugar"
+        ]),
+        HabitIconCategory(name: "Screens & Social Media", symbols: [
+            "custom:brainwashed-tv", "custom:zombie", "custom:tv", "custom:brain", "custom:spiral",
+            "custom:phone", "custom:messages", "custom:likes", "custom:selfie", "custom:gaming",
+            "custom:videos", "custom:notifications", "tv", "tv.slash", "iphone", "apps.iphone",
+            "bubble.left.and.bubble.right.fill", "hand.raised.fill", "eye.slash.fill"
+        ]),
+        HabitIconCategory(name: "Christian Faith", symbols: [
+            "custom:cross", "custom:orthodox-cross", "custom:prayer", "custom:bible", "custom:church",
+            "custom:dove", "custom:candle", "custom:fish", "custom:bread", "custom:chalice",
+            "custom:crown", "custom:lamb", "custom:sword", "custom:shield", "custom:light",
+            "custom:heart", "custom:help", "cross.fill", "book.fill", "heart.fill", "shield.fill",
+            "sun.max.fill", "hands.sparkles.fill"
+        ]),
         HabitIconCategory(name: "Popular", symbols: [
             "star.fill", "sparkles", "target", "flag.fill", "bolt.fill", "trophy.fill",
             "checkmark.seal.fill", "heart.fill", "flame.fill", "leaf.fill", "sun.max.fill", "moon.stars.fill"
@@ -70,6 +89,16 @@ enum HabitIconCatalog {
     static func defaultSymbol(for habit: Habit) -> String {
         let name = habit.name.lowercased()
         let matches: [(words: [String], symbol: String)] = [
+            (["smok", "nicotine", "tobacco"], "custom:smoking"),
+            (["vape", "vaping"], "custom:vaping"),
+            (["cannabis", "marijuana", "weed"], "custom:cannabis"),
+            (["drug", "substance"], "custom:drugs"),
+            (["social media", "doomscroll", "scrolling"], "custom:phone"),
+            (["entertainment", "television", "binge"], "custom:tv"),
+            (["gambl", "betting"], "custom:gambling"),
+            (["alcohol", "drinking"], "custom:alcohol"),
+            (["bible", "scripture", "gospel"], "custom:bible"),
+            (["prayer", "pray", "christ", "jesus"], "custom:cross"),
             (["water", "drink", "hydrate"], "drop.fill"),
             (["run", "walk", "cardio"], "figure.run"),
             (["meditat", "mindful", "yoga"], "figure.mind.and.body"),

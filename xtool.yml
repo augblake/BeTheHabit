@@ -1,11 +1,11 @@
 version: 1
-bundleID: com.example.HabitQuest
-product: HabitQuest
+bundleID: XTL-MXQT5L922T.com.example.HabitQuest
+product: BeTheHabit
 infoPath: AppInfo.plist
 iconPath: AppIcon.png
 entitlementsPath: BeHabit.entitlements
 extensions:
   - product: BeHabitWidget
-    bundleID: com.example.HabitQuest.widget
+    bundleID: XTL-MXQT5L922T.com.example.HabitQuest.widget
     infoPath: WidgetInfo.plist
     entitlementsPath: BeHabitWidget.entitlements

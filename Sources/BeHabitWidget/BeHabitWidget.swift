@@ -71,7 +71,13 @@ struct HabitProvider: AppIntentTimelineProvider {
     func timeline(for configuration: ChooseHabit, in context: Context) async -> Timeline<HabitTimelineEntry> {
         let now = Date()
         let midnight = Calendar.current.startOfDay(for: Calendar.current.date(byAdding: .day, value: 1, to: now)!)
-        return Timeline(entries: [entry(configuration)], policy: .after(min(midnight, now.addingTimeInterval(900))))
+        let current = entry(configuration)
+        var entries = [current]
+        if var habit = current.habit, habit.tracksBothSides {
+            habit.expireAlternatingTimer(at: midnight)
+            entries.append(HabitTimelineEntry(date: midnight, habit: habit))
+        }
+        return Timeline(entries: entries, policy: .after(min(midnight, now.addingTimeInterval(900))))
     }
     private func entry(_ configuration: ChooseHabit) -> HabitTimelineEntry {
         let habits = (try? HabitRepository.shared().load()) ?? []
@@ -89,9 +95,9 @@ struct HabitWidgetView: View {
         VStack(alignment: .leading, spacing: 6) {
             if let habit = entry.habit {
                 HStack(spacing: 6) {
-                    Image(systemName: habit.iconName ?? "checkmark.circle")
+                    HabitSymbol(habit.tracksBothSides ? habit.activeTimerIconName : (habit.iconName ?? "checkmark.circle"))
                         .foregroundStyle(.primary)
-                    Text(habit.name)
+                    Text(habit.tracksBothSides ? habit.activeTimerName : habit.name)
                         .font(.subheadline.bold())
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -165,9 +171,15 @@ struct HabitWidgetView: View {
 
     @ViewBuilder private func timer(_ habit: Habit) -> some View {
         let date = habit.timerStartedFor ?? entry.date
-        let seconds = habit.entry(for: date)?.value ?? 0
+        let seconds = habit.runningOpposite ? (habit.oppositeTimerEntries?[Habit.dateKey(date)]?.value ?? 0) : (habit.entry(for: date)?.value ?? 0)
         if let started = habit.timerStartedAt {
-            Text(started.addingTimeInterval(-seconds), style: .timer).monospacedDigit()
+            if let cutoff = habit.timerCutoff() {
+                Text(timerInterval: started.addingTimeInterval(-seconds)...cutoff,
+                     pauseTime: cutoff, countsDown: false)
+                    .monospacedDigit()
+            } else {
+                Text(started.addingTimeInterval(-seconds), style: .timer).monospacedDigit()
+            }
         } else {
             Text(String(format: "%02d:%02d:%02d", Int(seconds) / 3600, Int(seconds) / 60 % 60, Int(seconds) % 60))
                 .monospacedDigit().foregroundStyle(.primary)
