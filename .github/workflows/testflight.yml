@@ -77,6 +77,8 @@ jobs:
 
       - name: Upload to TestFlight
         run: |
+          mkdir -p ~/.private_keys
+          cp ${RUNNER_TEMP}/private_keys/*.p8 ~/.private_keys/
           xcrun altool --upload-app \
             --type ios \
             --file "$RUNNER_TEMP/export/BeTheHabit-App.ipa" \
