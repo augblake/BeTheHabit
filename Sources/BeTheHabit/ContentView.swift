@@ -436,103 +436,14 @@ struct ContentView: View {
                 .padding(.bottom, 6)
             }
 
-            HStack(spacing: 3) {
-                Color.clear
-                    .frame(width: habitNameWidth, height: 60)
-
-                ForEach(visibleDays, id: \.self) { date in
-                    let isSelected = Calendar.current.isDate(date, inSameDayAs: selectedDate)
-
-                    Button {
-                        selectedDate = Calendar.current.startOfDay(for: date)
-                    } label: {
-                        VStack(spacing: 4) {
-                            Text(dayLetter(date))
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(isSelected ? completionGreen : Color.secondary)
-
-                            Text(dayNumber(date))
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(isSelected ? completionGreen : Color.primary)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 60)
-                        .background(
-                            isSelected ? completionGreen.opacity(0.1) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 15)
-                        )
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(date.formatted(.dateTime.weekday(.wide).month(.wide).day()))
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
-                }
-            }
-            .padding(.bottom, 1)
+            calendarDateHeader
 
             if habits.isEmpty {
                 emptyState
             } else {
                 LazyVStack(spacing: 4) {
                     ForEach(habits) { habit in
-                        let streak = visibleStreak(for: habit)
-
-                        HStack(spacing: 3) {
-                            habitNameCell(habit)
-
-                            ForEach(visibleDays, id: \.self) { date in
-                                habitDayCell(habit, date: date)
-                            }
-                        }
-                        .frame(height: 62)
-                        .background(
-                            selectedHabitIDs.contains(habit.id) ? Color.accentColor.opacity(0.14) :
-                            focusedHabitID == habit.id ? Color.accentColor.opacity(0.10) :
-                            streak > 0 ? streakGold.opacity(streak >= 4 ? 0.08 : 0.03) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 17)
-                        )
-                        .overlay {
-                            if streak > 0 {
-                                RoundedRectangle(cornerRadius: 17)
-                                    .strokeBorder(
-                                        streakGold.opacity(streak >= 4 ? 1 : 0.65),
-                                        lineWidth: streak >= 14 ? 3 : (streak >= 4 ? 2.5 : (streak >= 2 ? 1.5 : 1))
-                                    )
-                                    .shadow(
-                                        color: streakGold.opacity(streak >= 14 ? 0.55 : (streak >= 4 ? 0.35 : 0)),
-                                        radius: streak >= 14 ? 14 : 8
-                                    )
-                                    .allowsHitTesting(false)
-                            }
-                        }
-                        .overlay(alignment: .trailing) {
-                            if isSelectingHabits {
-                                Button {
-                                    toggleSelection(habit)
-                                } label: {
-                                    Image(systemName: selectedHabitIDs.contains(habit.id) ? "checkmark.circle.fill" : "circle")
-                                        .font(.system(size: 23, weight: .semibold))
-                                        .foregroundStyle(selectedHabitIDs.contains(habit.id) ? Color.accentColor : Color.secondary)
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                                        .padding(.trailing, 12)
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("\(selectedHabitIDs.contains(habit.id) ? "Deselect" : "Select") \(habit.name)")
-                            }
-                        }
-                        .contentShape(Rectangle())
-                        .opacity(draggingHabitID == habit.id ? 0.65 : 1)
-                        .offset(y: rowDragOffset(habit))
-                        .zIndex(draggingHabitID == habit.id ? 1 : 0)
-                        .shadow(color: .black.opacity(draggingHabitID == habit.id ? 0.2 : 0), radius: 8, y: 3)
-                        .transaction { transaction in
-                            if draggingHabitID == habit.id { transaction.animation = nil }
-                        }
-                        .background(reorderTouchSurface(habit))
-                        .accessibilityAction(named: "Habit Actions") { focusedHabitID = habit.id }
-                        .accessibilityAction(named: "Move Up") { store.moveHabit(habit, by: -1) }
-                        .accessibilityAction(named: "Move Down") { store.moveHabit(habit, by: 1) }
+                        calendarHabitRow(habit)
                     }
                 }
                 .coordinateSpace(name: "habitRows")
@@ -541,6 +452,103 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 24)
+    }
+
+    private var calendarDateHeader: some View {
+        HStack(spacing: 3) {
+            Color.clear
+                .frame(width: habitNameWidth, height: 60)
+
+            ForEach(visibleDays, id: \.self) { date in
+                let isSelected = Calendar.current.isDate(date, inSameDayAs: selectedDate)
+
+                Button {
+                    selectedDate = Calendar.current.startOfDay(for: date)
+                } label: {
+                    VStack(spacing: 4) {
+                        Text(dayLetter(date))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(isSelected ? completionGreen : Color.secondary)
+
+                        Text(dayNumber(date))
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(isSelected ? completionGreen : Color.primary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 60)
+                    .background(
+                        isSelected ? completionGreen.opacity(0.1) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 15)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(date.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+        .padding(.bottom, 1)
+    }
+
+    private func calendarHabitRow(_ habit: Habit) -> some View {
+        let streak = visibleStreak(for: habit)
+
+        return HStack(spacing: 3) {
+            habitNameCell(habit)
+
+            ForEach(visibleDays, id: \.self) { date in
+                habitDayCell(habit, date: date)
+            }
+        }
+        .frame(height: 62)
+        .background(
+            selectedHabitIDs.contains(habit.id) ? Color.accentColor.opacity(0.14) :
+            focusedHabitID == habit.id ? Color.accentColor.opacity(0.10) :
+            streak > 0 ? streakGold.opacity(streak >= 4 ? 0.08 : 0.03) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 17)
+        )
+        .overlay {
+            if streak > 0 {
+                RoundedRectangle(cornerRadius: 17)
+                    .strokeBorder(
+                        streakGold.opacity(streak >= 4 ? 1 : 0.65),
+                        lineWidth: streak >= 14 ? 3 : (streak >= 4 ? 2.5 : (streak >= 2 ? 1.5 : 1))
+                    )
+                    .shadow(
+                        color: streakGold.opacity(streak >= 14 ? 0.55 : (streak >= 4 ? 0.35 : 0)),
+                        radius: streak >= 14 ? 14 : 8
+                    )
+                    .allowsHitTesting(false)
+            }
+        }
+        .overlay(alignment: .trailing) {
+            if isSelectingHabits {
+                Button {
+                    toggleSelection(habit)
+                } label: {
+                    Image(systemName: selectedHabitIDs.contains(habit.id) ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 23, weight: .semibold))
+                        .foregroundStyle(selectedHabitIDs.contains(habit.id) ? Color.accentColor : Color.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                        .padding(.trailing, 12)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(selectedHabitIDs.contains(habit.id) ? "Deselect" : "Select") \(habit.name)")
+            }
+        }
+        .contentShape(Rectangle())
+        .opacity(draggingHabitID == habit.id ? 0.65 : 1)
+        .offset(y: rowDragOffset(habit))
+        .zIndex(draggingHabitID == habit.id ? 1 : 0)
+        .shadow(color: .black.opacity(draggingHabitID == habit.id ? 0.2 : 0), radius: 8, y: 3)
+        .transaction { transaction in
+            if draggingHabitID == habit.id { transaction.animation = nil }
+        }
+        .background(reorderTouchSurface(habit))
+        .accessibilityAction(named: "Habit Actions") { focusedHabitID = habit.id }
+        .accessibilityAction(named: "Move Up") { store.moveHabit(habit, by: -1) }
+        .accessibilityAction(named: "Move Down") { store.moveHabit(habit, by: 1) }
     }
 
     private func rowDragOffset(_ habit: Habit) -> CGFloat {
