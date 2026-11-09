@@ -91,6 +91,7 @@ struct HabitDetailsView: View {
             .background(Color.background.ignoresSafeArea())
             .navigationTitle("Habit Details")
             .navigationBarTitleDisplayMode(.inline)
+            .keyboardDismissal()
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink("Edit") {
@@ -660,7 +661,7 @@ struct HabitIconPickerView: View {
             : (HabitIconCatalog.categories.first(where: { $0.name == selectedCategory })?.symbols ?? [])
         var seen = Set<String>()
         let filtered = available.filter { symbol in
-            (HabitIconGlyph.icons[symbol] != nil || UIImage(systemName: symbol) != nil) && seen.insert(symbol).inserted
+            UIImage(systemName: HabitIconGlyph.icons[symbol]?.symbol ?? symbol) != nil && seen.insert(symbol).inserted
         }
         guard !searchText.isEmpty else { return filtered }
         return filtered.filter { HabitIconGlyph.matches($0, query: searchText.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -721,6 +722,7 @@ struct HabitIconPickerView: View {
         .background(Color.background.ignoresSafeArea())
         .navigationTitle("Choose Icon")
         .navigationBarTitleDisplayMode(.inline)
+        .keyboardDismissal()
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") { dismiss() }

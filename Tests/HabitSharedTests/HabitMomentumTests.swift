@@ -74,6 +74,16 @@ final class HabitMomentumTests: XCTestCase {
 }
 
 final class HabitIconGlyphTests: XCTestCase {
+    func testCustomIconsUseMonochromeSymbols() {
+        XCTAssertEqual(HabitIconGlyph.icons.count, 49)
+        for (id, icon) in HabitIconGlyph.icons {
+            XCTAssertTrue(icon.symbol.allSatisfy(\.isASCII), id)
+            XCTAssertFalse(icon.symbol.hasPrefix("custom:"), id)
+        }
+        XCTAssertEqual(HabitIconGlyph.icons["custom:smoking"]?.symbol, "smoke.fill")
+        XCTAssertEqual(HabitIconGlyph.title(for: "custom:zombie"), "Zombie")
+    }
+
     func testRequestedIconTopicsAreAvailableAndSearchable() {
         for (id, query) in [("custom:smoking", "nicotine"), ("custom:drugs", "drugs"),
                             ("custom:zombie", "zombie"), ("custom:brainwashed-tv", "brainwash"),

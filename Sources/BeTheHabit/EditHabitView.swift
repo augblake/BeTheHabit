@@ -79,6 +79,7 @@ struct EditHabitView: View {
         }
         .navigationTitle("Edit Habit")
         .navigationBarTitleDisplayMode(.inline)
+        .keyboardDismissal()
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") { save() }

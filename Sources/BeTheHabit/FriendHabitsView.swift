@@ -196,7 +196,7 @@ struct ShareHabitView: View {
                     Section { SharingErrorView() }
                 }
                 Section {
-                    Text("Share \(habit.name) with a friend. They’ll see your last three days of progress and current streak, but cannot change your habit. Your notes stay private.")
+                    Text("Share \(habit.name) with a friend. The app shows them your last three days of progress and current streak, but this habit’s full progress history is sent to their device. They cannot change your habit. Your notes stay private.")
                     TextField("Your name", text: $name).textContentType(.nickname)
                 }
                 Section {
@@ -215,6 +215,7 @@ struct ShareHabitView: View {
                 }
             }
             .navigationTitle("Share Habit")
+            .keyboardDismissal()
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .onAppear { name = sharing.ownerName }
             .sheet(item: $presentation) { CloudSharingSheet(presentation: $0) }

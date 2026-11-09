@@ -22,8 +22,6 @@ struct ContentView: View {
     @State private var momentumPreviewFading = false
     @State private var draggingHabitID: UUID?
     @State private var focusedHabitID: UUID?
-    @State private var isSelectingHabits = false
-    @State private var selectedHabitIDs: Set<UUID> = []
     @State private var habitIDsPendingDeletion: Set<UUID> = []
     @State private var showingDeleteConfirmation = false
     @State private var showingSharingUnavailable = false
@@ -68,8 +66,7 @@ struct ContentView: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    if let focusedHabit = store.habits.first(where: { $0.id == focusedHabitID }),
-                       !isSelectingHabits {
+                    if let focusedHabit = store.habits.first(where: { $0.id == focusedHabitID }) {
                         habitActionBar(for: focusedHabit)
                     }
 
@@ -142,8 +139,6 @@ struct ContentView: View {
                 Button(habitIDsPendingDeletion.count == 1 ? "Delete Habit" : "Delete Habits", role: .destructive) {
                     store.deleteHabits(ids: habitIDsPendingDeletion)
                     habitIDsPendingDeletion.removeAll()
-                    selectedHabitIDs.removeAll()
-                    isSelectingHabits = false
                     focusedHabitID = nil
                 }
                 Button("Cancel", role: .cancel) {
@@ -309,7 +304,6 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
                 HabitSymbol(habit.iconName ?? HabitIconCatalog.defaultSymbol(for: habit))
-                    .foregroundStyle(Color.accent)
                 Text(habit.name)
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
@@ -408,34 +402,6 @@ struct ContentView: View {
         let habits = store.habits
 
         return VStack(spacing: 3) {
-            if !habits.isEmpty {
-                HStack {
-                    if isSelectingHabits {
-                        Button("Cancel") {
-                            isSelectingHabits = false
-                            selectedHabitIDs.removeAll()
-                        }
-                        Spacer()
-                        Text("\(selectedHabitIDs.count) selected")
-                            .foregroundStyle(.secondary)
-                        Button("Delete") {
-                            confirmDelete(selectedHabitIDs)
-                        }
-                        .foregroundStyle(.red)
-                        .disabled(selectedHabitIDs.isEmpty)
-                    } else {
-                        Spacer()
-                        Button("Select") {
-                            focusedHabitID = nil
-                            isSelectingHabits = true
-                        }
-                    }
-                }
-                .font(.system(size: 14, weight: .medium))
-                .padding(.horizontal, 8)
-                .padding(.bottom, 6)
-            }
-
             calendarDateHeader
 
             if habits.isEmpty {
@@ -502,7 +468,6 @@ struct ContentView: View {
         }
         .frame(height: 62)
         .background(
-            selectedHabitIDs.contains(habit.id) ? Color.accentColor.opacity(0.14) :
             focusedHabitID == habit.id ? Color.accentColor.opacity(0.10) :
             streak > 0 ? streakGold.opacity(streak >= 4 ? 0.08 : 0.03) : Color.clear,
             in: RoundedRectangle(cornerRadius: 17)
@@ -519,22 +484,6 @@ struct ContentView: View {
                         radius: streak >= 14 ? 14 : 8
                     )
                     .allowsHitTesting(false)
-            }
-        }
-        .overlay(alignment: .trailing) {
-            if isSelectingHabits {
-                Button {
-                    toggleSelection(habit)
-                } label: {
-                    Image(systemName: selectedHabitIDs.contains(habit.id) ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 23, weight: .semibold))
-                        .foregroundStyle(selectedHabitIDs.contains(habit.id) ? Color.accentColor : Color.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                        .padding(.trailing, 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(selectedHabitIDs.contains(habit.id) ? "Deselect" : "Select") \(habit.name)")
             }
         }
         .contentShape(Rectangle())
@@ -559,7 +508,6 @@ struct ContentView: View {
 
     private func reorderTouchSurface(_ habit: Habit) -> some View {
         HabitRowReorderTouchSurface(
-            enabled: !isSelectingHabits,
             onBegin: { beginReorder(habit) },
             onMove: { translation in
                 guard draggingHabitID == habit.id else { return }
@@ -575,7 +523,7 @@ struct ContentView: View {
     }
 
     private func beginReorder(_ habit: Habit) {
-        guard !isSelectingHabits, draggingHabitID == nil,
+        guard draggingHabitID == nil,
               let index = store.habits.firstIndex(where: { $0.id == habit.id }) else { return }
         focusedHabitID = habit.id
         dragStartIndex = index
@@ -594,14 +542,6 @@ struct ContentView: View {
         }
     }
 
-    private func toggleSelection(_ habit: Habit) {
-        if selectedHabitIDs.contains(habit.id) {
-            selectedHabitIDs.remove(habit.id)
-        } else {
-            selectedHabitIDs.insert(habit.id)
-        }
-    }
-
     private func confirmDelete(_ ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
         habitIDsPendingDeletion = ids
@@ -611,7 +551,7 @@ struct ContentView: View {
     private func habitNameCell(_ habit: Habit) -> some View {
         let streak = visibleStreak(for: habit)
         return Button {
-            guard !isSelectingHabits, draggingHabitID == nil, Date() >= suppressHabitTapUntil else { return }
+            guard draggingHabitID == nil, Date() >= suppressHabitTapUntil else { return }
             focusedHabitID = nil
             activeSheet = .details(habit)
         } label: {
@@ -645,7 +585,7 @@ struct ContentView: View {
             && Calendar.current.isDate(store.timerDate(habit, fallback: date), inSameDayAs: date)
 
         return Button {
-            guard !isSelectingHabits, draggingHabitID == nil, Date() >= suppressHabitTapUntil else { return }
+            guard draggingHabitID == nil, Date() >= suppressHabitTapUntil else { return }
             focusedHabitID = nil
             selectedDate = Calendar.current.startOfDay(for: date)
             handleTap(habit, on: date)
@@ -855,7 +795,6 @@ private struct StopwatchView: View {
             VStack(spacing: 22) {
                 HabitSymbol(currentHabit.tracksBothSides ? currentHabit.activeTimerIconName : "stopwatch.fill")
                     .font(.system(size: 34))
-                    .foregroundStyle(Color.accent)
                     .padding(.top, 20)
 
                 Text(currentHabit.activeTimerName)
@@ -984,6 +923,7 @@ private struct StopwatchView: View {
             .background(Color.background.ignoresSafeArea())
             .navigationTitle("Stopwatch")
             .navigationBarTitleDisplayMode(.inline)
+            .keyboardDismissal()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
@@ -1048,7 +988,6 @@ extension Color {
 // A stationary hold begins the same reorder behavior as before.
 @MainActor
 private struct HabitRowReorderTouchSurface: UIViewRepresentable {
-    var enabled: Bool
     var onBegin: () -> Void
     var onMove: (CGFloat) -> Void
     var onFinish: () -> Void
@@ -1128,7 +1067,7 @@ private struct HabitRowReorderTouchSurface: UIViewRepresentable {
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-            guard parent.enabled, let anchor, let scrollView,
+            guard let anchor, let scrollView,
                   !scrollView.isDragging, !scrollView.isDecelerating else { return false }
             let point = anchor.convert(touch.location(in: scrollView), from: scrollView)
             return anchor.bounds.contains(point)
@@ -1142,11 +1081,18 @@ private struct HabitRowReorderTouchSurface: UIViewRepresentable {
             return otherGestureRecognizer === scrollView.panGestureRecognizer
         }
 
+        // Almost all of a row is buttons. Without this, their gestures can block the hold,
+        // so it works only when the finger lands between them. Recognizing the hold cancels
+        // the button's touch, so a hold never also counts as a tap.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            otherGestureRecognizer !== scrollView?.panGestureRecognizer
+        }
+
         @objc private func handlePress(_ press: UILongPressGestureRecognizer) {
             guard let scrollView else { return }
             switch press.state {
             case .began:
-                guard parent.enabled else { return }
                 startY = press.location(in: scrollView).y
                 isReordering = true
                 parent.onBegin()

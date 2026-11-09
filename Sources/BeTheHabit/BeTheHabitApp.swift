@@ -14,6 +14,7 @@ struct BeTheHabitApp: App {
         WindowGroup {
                 ContentView()
                     .environmentObject(store)
+                    .onAppear { KeyboardDismissTap.shared.install() }
                     .tint(.habitGreen)
                     .task {
                         backup.begin(with: store)
